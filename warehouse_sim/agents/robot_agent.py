@@ -69,8 +69,10 @@ class RobotAgent(mesa.Agent):
         self._return_path: List[Tuple[int, int]] = []
         self.local_task_knowledge: Dict[int, Dict[str, Any]] = {}
         self.local_event_memory: List[Dict[str, Any]] = []
+        self.local_decision_history: List[Dict[str, Any]] = []
         self.local_task_queue: List[int] = []
         self.nearby_agents: List[int] = []
+        self._last_network_neighbors: Optional[Tuple[int, ...]] = None
         self.communication_status = "CONNECTED"
         self.last_decision = "Waiting for a task announcement"
         self.last_decision_reason = "No eligible local task is known"
@@ -78,6 +80,7 @@ class RobotAgent(mesa.Agent):
         self._last_bid_tick: Dict[int, int] = {}
         self._processed_message_ids: set[str] = set()
         self._processed_message_order = deque()
+        self._local_trace_sequence = 0
 
     def receive_assignment(self, task: Any) -> None:
         """Receive a task assignment from the Fleet Manager."""
@@ -93,10 +96,35 @@ class RobotAgent(mesa.Agent):
         """Hold in place (wait) — used for deadlock resolution."""
         self.path_index = max(0, self.path_index)
 
+    def _record_local_event(self, event_type: str, **details: Any) -> None:
+        """Keep a bounded, robot-local trace for dashboard explanation."""
+        self._local_trace_sequence += 1
+        self.local_decision_history.append({
+            "event_type": event_type,
+            "tick": self.model.current_tick,
+            "local_sequence": self._local_trace_sequence,
+            "partitioned": self.model.network.partition_count > 1,
+            **details,
+        })
+        if len(self.local_decision_history) > 500:
+            del self.local_decision_history[:-500]
+
     def sense(self) -> None:
         """Observe local state and process only messages delivered to this robot."""
         network = self.model.network
-        self.nearby_agents = network.neighbors(self.robot_id)
+        current_neighbors = tuple(network.neighbors(self.robot_id))
+        if self._last_network_neighbors is not None and current_neighbors != self._last_network_neighbors:
+            lost = sorted(set(self._last_network_neighbors) - set(current_neighbors))
+            added = sorted(set(current_neighbors) - set(self._last_network_neighbors))
+            self._record_local_event(
+                "communication_neighbors_changed",
+                previous_neighbors=list(self._last_network_neighbors),
+                current_neighbors=list(current_neighbors),
+                lost_neighbors=lost,
+                added_neighbors=added,
+            )
+        self.nearby_agents = list(current_neighbors)
+        self._last_network_neighbors = current_neighbors
         self.communication_status = "CONNECTED" if self.nearby_agents else "ISOLATED"
         for message in network.receive(f"Robot-{self.robot_id}"):
             if message.message_id in self._processed_message_ids:
@@ -106,7 +134,15 @@ class RobotAgent(mesa.Agent):
             self._processed_message_order.append(message.message_id)
             self._processed_message_ids.add(message.message_id)
             payload = message.payload
-            self.local_event_memory.append(message.as_dict())
+            received_event = message.as_dict()
+            self._local_trace_sequence += 1
+            received_event.update({
+                "received_tick": self.model.current_tick,
+                "local_sequence": self._local_trace_sequence,
+                "received_during_partition": network.partition_count > 1,
+                "received_neighbor_ids": list(current_neighbors),
+            })
+            self.local_event_memory.append(received_event)
             if len(self.local_event_memory) > 500:
                 del self.local_event_memory[:-500]
             if message.message_type == MessageType.TASK_ANNOUNCEMENT:
@@ -200,12 +236,17 @@ class RobotAgent(mesa.Agent):
                     "robot_id": self.robot_id, "reason": reason})
             return
         task.setdefault("bid_exclusions", {}).pop(self.robot_id, None)
+        distance = abs(self.pos_tuple[0] - int(task["shelf_location"][0])) + \
+                   abs(self.pos_tuple[1] - int(task["shelf_location"][1]))
+        battery_adjustment = (100.0 - self.battery) * 0.12
+        urgency_adjustment = -4.0 if task.get("priority") == "urgent" else 0.0
         score = self._bid_score(task)
         task["bids"][self.robot_id] = score
-        self.model.network.broadcast(f"Robot-{self.robot_id}", MessageType.TASK_BID,
-                                     {"task_id": task_id, "robot_id": self.robot_id,
-                                      "score": score, "battery": self.battery,
-                                      "pos": list(self.pos_tuple)}, self.model.current_tick)
+        bid_messages = self.model.network.broadcast(
+            f"Robot-{self.robot_id}", MessageType.TASK_BID,
+            {"task_id": task_id, "robot_id": self.robot_id,
+             "score": score, "battery": self.battery,
+             "pos": list(self.pos_tuple)}, self.model.current_tick)
         self._last_bid_tick[task_id] = self.model.current_tick
         bid_key = (task_id, self.robot_id)
         if bid_key not in self.model._counted_bids:
@@ -214,7 +255,28 @@ class RobotAgent(mesa.Agent):
         self.model.log_message(f"Robot-{self.robot_id}", "Auction", {
             "action": "auction_bid_calculated", "task_id": task_id,
             "robot_id": self.robot_id, "score": score,
+            "distance": distance,
+            "battery_adjustment": battery_adjustment,
+            "urgency_adjustment": urgency_adjustment,
+            "position": list(self.pos_tuple),
+            "battery": self.battery,
+            "priority": task.get("priority", "normal"),
             "cost": "Manhattan distance + 0.12 × battery used - 4 for urgent work"})
+        self._record_local_event(
+            "bid_calculated", task_id=task_id, score=score, distance=distance,
+            battery_adjustment=battery_adjustment,
+            urgency_adjustment=urgency_adjustment, position=list(self.pos_tuple),
+            battery=self.battery, priority=task.get("priority", "normal"),
+        )
+        robot_recipients = [
+            int(message.recipient.split("-")[1]) for message in bid_messages
+            if message.recipient.startswith("Robot-")
+        ]
+        self._record_local_event(
+            "bid_broadcast", task_id=task_id,
+            recipients=robot_recipients,
+            message_ids=[message.message_id for message in bid_messages],
+        )
         self.last_decision = f"Bid on task {task_id}"
         self.last_decision_reason = f"Local bid score {score:.2f}; lower is better"
 
@@ -246,6 +308,12 @@ class RobotAgent(mesa.Agent):
             return
         if task_id in self.model.completed_task_ids:
             task["completed"] = True
+            return
+        if self.model.robots[owner].status == "FAILED":
+            task.setdefault("claims", {}).pop(owner, None)
+            task.setdefault("claim_expiry", {}).pop(owner, None)
+            if task.get("owner") == owner:
+                task.pop("owner", None)
             return
         claims = task["claims"]
         if task.get("completed"):
@@ -336,7 +404,20 @@ class RobotAgent(mesa.Agent):
             else:
                 existing.setdefault("claim_expiry", {}).update({int(k): int(v) for k, v in item["task"].get("claim_expiry", {}).items()})
                 before = len(existing["claims"])
-                existing["claims"].update({int(k): float(v) for k, v in item.get("claims", {}).items()})
+                existing["claims"] = {
+                    int(k): float(v) for k, v in existing["claims"].items()
+                    if int(k) in self.model.robots and self.model.robots[int(k)].status != "FAILED"
+                }
+                existing["claims"].update({
+                    int(k): float(v) for k, v in item.get("claims", {}).items()
+                    if int(k) in self.model.robots and self.model.robots[int(k)].status != "FAILED"
+                })
+                if existing.get("owner") in self.model.robots and self.model.robots[existing["owner"]].status == "FAILED":
+                    existing.pop("owner", None)
+                existing["claim_expiry"] = {
+                    int(k): int(v) for k, v in existing.get("claim_expiry", {}).items()
+                    if int(k) in self.model.robots and self.model.robots[int(k)].status != "FAILED"
+                }
                 for owner in existing["claims"]:
                     existing["claim_expiry"].setdefault(owner, self.model.current_tick + 30)
                 self._prune_expired_claims(existing)
@@ -365,6 +446,10 @@ class RobotAgent(mesa.Agent):
             self.model.log_message(f"Robot-{self.robot_id}", "RobotNetwork", {
                 "action": "state_reconciled", "changes": changes,
                 "tasks_known": len(self.local_task_knowledge)})
+            self._record_local_event(
+                "state_synchronised", changes=changes,
+                tasks_known=len(self.local_task_knowledge),
+            )
 
     def decide(self) -> None:
         """Decide what action to take based on current state."""
@@ -450,6 +535,27 @@ class RobotAgent(mesa.Agent):
             self.last_decision = f"Claimed task {task_id}"
             self.last_decision_reason = f"Lowest locally known bid ({task_data['claims'][self.robot_id]:.2f})"
             task_data["decision"] = self.last_decision_reason
+            selected_score = float(task_data["claims"][self.robot_id])
+            bid_record = next((
+                event for event in reversed(self.local_decision_history)
+                if event.get("event_type") == "bid_calculated"
+                and event.get("task_id") == task_id
+                and math.isclose(float(event.get("score", float("inf"))), selected_score,
+                                 rel_tol=0.0, abs_tol=1e-9)
+            ), None)
+            self._record_local_event(
+                "task_selected", task_id=task_id,
+                bid=selected_score,
+                available_bids={int(rid): float(value)
+                                for rid, value in task_data["bids"].items()},
+                reason=self.last_decision_reason,
+                bid_calculation=({
+                    key: bid_record[key] for key in (
+                        "score", "distance", "battery_adjustment",
+                        "urgency_adjustment", "position", "battery", "priority",
+                    ) if key in bid_record
+                } if bid_record else None),
+            )
             self.model.log_message(f"Robot-{self.robot_id}", "RobotNetwork", {
                 "action": "distributed_task_claim", "task_id": task_id,
                 "robot_id": self.robot_id, "bid": task_data["claims"][self.robot_id],

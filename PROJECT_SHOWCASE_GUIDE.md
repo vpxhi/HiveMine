@@ -9,12 +9,12 @@ The project is deliberately explicit about its boundary: agents and communicatio
 ## Judge walkthrough (about 4 minutes)
 
 1. **Home:** point out the miniature 3D warehouse, moving robots, routes and the short activity feed. Press **Start Simulation**.
-2. **Explore:** select a robot. Explain its current job, destination and battery; open Technical details only if a judge asks how bids or messages work.
+2. **Inside the robot's mind:** open Explore → **Robot Perspective** and select a robot. Compare its local task/bid/claim table with the separately labelled global registry. Show the actual recorded bid factors, received-message timeline and peers it can reach.
 3. **Guided walkthrough:** press **Show me how HiveMine works**. Advance through normal operation, bidding, network failure, independent work, observed conflicts, recovery and measured results. Use the 20-tick continuation during independent operation to show actual progress.
-4. **Experiment:** press **Simulate Network Failure**. The 3D peer links break into two groups while the physical robot routes continue.
-5. **Independent operation:** let the simulation run. The activity feed describes local choices; Experiment reports real delivery counts and independent decisions during the outage.
-6. **Recovery:** press **Restore Communication**. Keep the simulation running for several ticks so the robots exchange and reconcile their local histories.
-7. **Results:** open Advanced settings and show the observed throughput comparison. Export JSON or CSV if judges want run data. Describe only the measurements from this run.
+4. **Chaos Lab:** press **START 60-SECOND JUDGE DEMO** for a repeatable normal/partition/recovery story, or use **Split Network**, **Isolate Robot**, **Total Blackout**, **Unstable Network**, **Block Aisle** and **Robot Failure** to choose a live disruption.
+5. **Independent operation:** during a partition, let the simulation continue. The four counters show experiment deltas alongside cumulative counts; task completions and independent decisions come from the current model.
+6. **Recovery:** press **Restore Network**. The 3D peer links reconnect; the demo waits for observed state-sync messages and state reconciliation before it reports completion.
+7. **Results:** inspect the after-action report for affected robots, outage completions, open tasks and synchronised state. Download the JSON evidence or run the seeded comparison. Describe only observed results.
 
 For a deterministic reset, press **Reset**. The model and message-loss random generator use seed 42.
 
@@ -60,8 +60,8 @@ During a partition, each robot continues its current state machine and may claim
 | Page | Demonstration purpose |
 |---|---|
 | Home | Watch the 3D warehouse, control the simulation, read the activity feed, launch the guided walkthrough |
-| Explore | Inspect each robot's activity and optional local state/message details |
-| Experiment | Apply communication failures, restore links, try other warehouse disruptions, and inspect measured outcomes |
+| Explore | Compare a selected robot's local memory with observer-only simulation state, inspect recorded bids/timeline, or switch back to the 3D warehouse |
+| Chaos Lab | Apply communication or warehouse failures, restore links, and inspect measured outcomes |
 
 The scene uses Plotly 3D meshes and coordinates from `WarehouseModel.get_grid_state()`. Routes, destinations, task states, robot positions and network edges are model state. Routes, network links and task markers have independent toggles. Camera rotation, zoom, pan and top-down/angled views are interactive; camera reset is available from the Plotly toolbar.
 

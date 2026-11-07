@@ -1,8 +1,11 @@
 [theme]
 base = "dark"
-primaryColor = "#A996FF"
-backgroundColor = "#111722"
-secondaryBackgroundColor = "#1A2230"
-textColor = "#EEF2F8"
+primaryColor = "#48C8EF"
+backgroundColor = "#080D19"
+secondaryBackgroundColor = "#111C2D"
+textColor = "#F1F5F9"
 font = "sans serif"
-chartCategoricalColors = ["#76A9FF", "#68D8A2", "#F0BD68", "#EF7884", "#B5A0FF"]
+chartCategoricalColors = ["#48C8EF", "#34D399", "#FBBF24", "#FB7185", "#A78BFA"]
+borderColor = "#26364B"
+showWidgetBorder = true
+baseRadius = "medium"

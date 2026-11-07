@@ -38,7 +38,10 @@ def isolate_robot(model: WarehouseModel, robot_id: int) -> Dict[str, Any]:
         return {"error": f"Robot {robot_id} not found"}
     model.network.isolate(robot_id)
     event = {"shock_type": "robot_isolation", "tick": model.current_tick,
-             "robot_id": robot_id, "status": "injected", "recovered": False}
+             "robot_id": robot_id,
+             "groups": [sorted(int(node.split("-")[1]) for node in group)
+                        for group in model.network.robot_components()],
+             "status": "injected", "recovered": False}
     model.log_message("EventSystem", "RobotNetwork", event)
     model.track_recovery(event)
     return event
@@ -73,6 +76,8 @@ def restore_network(model: WarehouseModel) -> Dict[str, Any]:
     model.network.set_conditions(0, 0)
     model._reconciliation_force_start = was_partitioned
     event = {"shock_type": "network_recovery", "tick": model.current_tick,
+             "groups": [sorted(int(node.split("-")[1]) for node in group)
+                        for group in model.network.robot_components()],
              "status": "recovery_in_progress" if was_partitioned else "recovered",
              "recovered": not was_partitioned}
     model.log_message("EventSystem", "RobotNetwork", event)
@@ -101,6 +106,7 @@ def kill_robot(model: WarehouseModel, robot_id: int) -> Dict[str, Any]:
 
     before_status = robot.status
     before_task = robot.current_task
+    failed_cell = robot.pos_tuple
 
     # Kill the robot
     robot.status = "FAILED"
@@ -114,6 +120,13 @@ def kill_robot(model: WarehouseModel, robot_id: int) -> Dict[str, Any]:
 
     # Clear its reservations
     model.traffic_controller._clear_reservations(robot_id)
+    # A disabled robot in an aisle becomes a physical obstacle. The packing
+    # station is intentionally shared by multiple robots in this model and
+    # cannot be closed by a single failure.
+    rerouted = 0
+    if failed_cell != model.packing_station:
+        model.blocked_cells.add(failed_cell)
+        rerouted = model.traffic_controller.reroute_on_block(failed_cell)
 
     # Fleet Manager handles reassignment
     model.fleet_manager.handle_robot_failure(robot_id)
@@ -133,6 +146,8 @@ def kill_robot(model: WarehouseModel, robot_id: int) -> Dict[str, Any]:
         "shock_type": "robot_failure",
         "tick": model.current_tick,
         "robot_id": robot_id,
+        "failed_position": list(failed_cell),
+        "robots_rerouted": rerouted,
         "before_status": before_status,
         "task_reassigned": before_task is not None,
         "task_id": task_id,
@@ -171,6 +186,10 @@ def block_cell(
     if cell in model.charging_docks:
         return {"error": "Cannot block a charging dock"}
 
+    affected_robots = [
+        robot_id for robot_id, path in model.traffic_controller.active_paths.items()
+        if cell in path
+    ]
     model.blocked_cells.add(cell)
 
     # Traffic Controller reroutes affected robots
@@ -183,6 +202,7 @@ def block_cell(
         "tick": model.current_tick,
         "blocked_cell": list(cell),
         "robots_rerouted": rerouted,
+        "affected_robots": affected_robots,
         "recovered": False,
         "status": "recovery_in_progress",
     }
@@ -309,21 +329,15 @@ def inject_deadlock(model: WarehouseModel) -> Dict[str, Any]:
     Returns:
         Recovery event dict.
     """
-    # Find two available robots (prefer idle, fall back to any non-failed)
+    # Only reposition idle robots with no task or reserved charging dock. The
+    # previous fallback could teleport a robot out of a charging route or
+    # abandon an active order, leaving stale resource reservations behind.
     idle_robots = [
         r for r in model.robots.values()
-        if r.status == "IDLE"
+        if r.status == "IDLE" and r.current_task is None and r._charging_dock is None
     ]
-
     if len(idle_robots) < 2:
-        # Fall back to any non-failed robots
-        idle_robots = [
-            r for r in model.robots.values()
-            if r.status != "FAILED"
-        ]
-
-    if len(idle_robots) < 2:
-        return {"error": "Need at least 2 non-failed robots for deadlock injection"}
+        return {"error": "Deadlock injection needs two idle robots without active tasks or charger reservations"}
 
     robot_a = idle_robots[0]
     robot_b = idle_robots[1]
@@ -333,6 +347,14 @@ def inject_deadlock(model: WarehouseModel) -> Dict[str, Any]:
     # Robot B at (5, 14), goal at (5, 10)
     pos_a = (5, 10)
     pos_b = (5, 14)
+
+    targets = {robot_a.robot_id, robot_b.robot_id}
+    if any(robot.robot_id not in targets for cell in (pos_a, pos_b)
+           for robot in model.get_robots_at(cell)):
+        return {"error": "Deadlock test corridor is occupied by a robot that cannot be repositioned safely"}
+
+    model.traffic_controller._clear_reservations(robot_a.robot_id)
+    model.traffic_controller._clear_reservations(robot_b.robot_id)
 
     robot_a.pos_tuple = pos_a
     robot_b.pos_tuple = pos_b

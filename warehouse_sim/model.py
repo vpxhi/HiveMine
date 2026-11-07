@@ -189,6 +189,7 @@ class WarehouseModel(mesa.Model):
         for robot in self.robots.values():
             if robot.status != "FAILED":
                 robot.sense()
+        self._reopen_orphaned_task_leases()
 
         # ── Stage 2: DECIDE ───────────────────────────────────────────
         self.customer_agent.decide()
@@ -226,6 +227,47 @@ class WarehouseModel(mesa.Model):
         phase["ticks"] += 1
         phase["tasks_completed"] += max(0, completed_now - self._completed_at_last_step)
         self._completed_at_last_step = completed_now
+
+    def _reopen_orphaned_task_leases(self) -> None:
+        """Let the shared order queue re-offer tasks with no live robot owner.
+
+        Robots still decide from their local task knowledge. This service-side
+        lease check only clears the global observer/queue assignment after all
+        live local claims have expired and no live robot is executing the task.
+        """
+        for task in self.order_agent.all_tasks:
+            if task.status != "IN_PROGRESS" or task.task_id in self.completed_task_ids:
+                continue
+            active_execution = any(
+                robot.status != "FAILED"
+                and getattr(robot.current_task, "task_id", None) == task.task_id
+                for robot in self.robots.values()
+            )
+            if active_execution:
+                continue
+            active_lease = False
+            for robot in self.robots.values():
+                if robot.status == "FAILED":
+                    continue
+                local = robot.local_task_knowledge.get(task.task_id, {})
+                for owner in local.get("claims", {}):
+                    try:
+                        expiry = int(local.get("claim_expiry", {}).get(owner, 0))
+                    except (TypeError, ValueError):
+                        expiry = 0
+                    if owner in self.robots and self.robots[owner].status != "FAILED" and expiry > self.current_tick:
+                        active_lease = True
+                        break
+                if active_lease:
+                    break
+            if not active_lease:
+                task.status = "PENDING"
+                task.assigned_robot = -1
+                self.log_message("OrderAgent", "RobotNetwork", {
+                    "action": "task_lease_expired_reopened",
+                    "task_id": task.task_id,
+                    "tick": self.current_tick,
+                })
 
     def announce_task(self, task: Any) -> None:
         """Publish new work to the robot peer network; no fleet assignment is made here."""
@@ -320,7 +362,8 @@ class WarehouseModel(mesa.Model):
             self.partition_progress_by_group[group] = self.partition_progress_by_group.get(group, 0) + 1
         self.network.broadcast(f"Robot-{robot_id}", MessageType.TASK_COMPLETE,
                                {"task_id": task_id, "robot_id": robot_id}, self.current_tick)
-        self.log_message(f"Robot-{robot_id}", "RobotNetwork", {"action": "task_complete", "task_id": task_id})
+        self.log_message(f"Robot-{robot_id}", "RobotNetwork", {
+            "action": "task_complete", "task_id": task_id, "robot_id": robot_id})
         return True
 
     def _check_for_physical_collisions(self) -> None:

@@ -8,18 +8,18 @@ import plotly.graph_objects as go
 
 
 PALETTE = {
-    "blue": "#76A9FF",
-    "green": "#68D8A2",
-    "amber": "#F0BD68",
-    "red": "#EF7884",
-    "purple": "#B5A0FF",
-    "teal": "#63CEC4",
-    "pink": "#E99BC7",
-    "muted": "#738096",
-    "floor": "#1B2330",
-    "line": "#354153",
-    "rack": "#68788A",
-    "product": "#C5A575",
+    "blue": "#48C8EF",
+    "green": "#34D399",
+    "amber": "#FBBF24",
+    "red": "#FB7185",
+    "purple": "#A78BFA",
+    "teal": "#36B9A9",
+    "pink": "#E879B8",
+    "muted": "#94A3B8",
+    "floor": "#111C2D",
+    "line": "#26364B",
+    "rack": "#52647A",
+    "product": "#D6A86A",
 }
 
 
@@ -73,7 +73,7 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
     for cell in range(21):
         grid_points.extend([(cell - 0.5, -0.5, 0.015), (cell - 0.5, 19.5, 0.015), (None, None, None)])
         grid_points.extend([(-0.5, cell - 0.5, 0.015), (19.5, cell - 0.5, 0.015), (None, None, None)])
-    _line_trace(fig, grid_points, "#283443", 1, name="Aisle grid")
+    _line_trace(fig, grid_points, "#253249", 1, name="Aisle grid")
     boundary = [(-0.5,-0.5,0.04),(19.5,-0.5,0.04),(19.5,19.5,0.04),(-0.5,19.5,0.04),(-0.5,-0.5,0.04),
                 (-0.5,-0.5,3.4),(19.5,-0.5,3.4),(19.5,19.5,3.4),(-0.5,19.5,3.4),(-0.5,-0.5,3.4),
                 (None,None,None),(-0.5,-0.5,0.04),(-0.5,-0.5,3.4),(None,None,None),
@@ -108,16 +108,24 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
     active_edges = {frozenset((int(a.split("-")[1]), int(b.split("-")[1])))
                     for a, b in ((a, b) for a, peers in network.adjacency.items()
                                  for b in peers if a.startswith("Robot-") and b.startswith("Robot-") and a < b)}
+    partitioned = network.partition_count > 1
+    unstable = bool(network.latency or network.packet_loss)
     if show_network:
         for rid in range(len(robot_positions) - 1):
             edge = frozenset((rid, rid + 1))
             a = robot_positions[rid]; b = robot_positions[rid + 1]
             if edge in active_edges:
-                _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)], "#78C6B5", 3, name="Robots connected")
-            elif network.partition_count > 1:
+                if unstable:
+                    _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)],
+                                PALETTE["amber"], 3, "dash", "Unstable connection")
+                else:
+                    _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)],
+                                "#78C6B5", 3, name="Robots connected")
+            elif partitioned:
                 _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)], PALETTE["red"], 2, "dash", "Connection interrupted")
 
     robot_colors = [PALETTE["blue"], PALETTE["purple"], PALETTE["teal"], PALETTE["amber"], PALETTE["pink"]]
+    group_colors = [PALETTE["teal"], PALETTE["purple"], PALETTE["amber"], PALETTE["pink"], PALETTE["blue"]]
     task_styles = {
         "PENDING": (PALETTE["amber"], "circle", "Waiting for a robot"),
         "DISPATCHED": (PALETTE["blue"], "diamond", "Offer sent to robots"),
@@ -146,7 +154,7 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
         x, y = robot["pos"]
         group = sorted(network.connected_robot_ids(rid))
         group_index = min(group) if group else rid
-        color = robot_colors[rid % len(robot_colors)]
+        color = group_colors[group_index % len(group_colors)] if partitioned else robot_colors[rid % len(robot_colors)]
         if robot["status"] == "FAILED": color = PALETTE["red"]
         elif robot["status"] in ("CHARGING", "NEEDS_CHARGE", "EN_ROUTE_TO_CHARGE", "WAITING_FOR_CHARGE"): color = PALETTE["amber"]
         elif robot["status"] in ("PICKING", "DROPPING"): color = PALETTE["green"]
@@ -173,16 +181,19 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
                                        hovertemplate=f"Robot {rid+1:02d} destination<extra></extra>", showlegend=False))
         if rid == selected_robot:
             fig.add_trace(go.Scatter3d(x=[x], y=[y], z=[0.93], mode="markers",
-                                       marker={"size": 21, "color": color, "opacity": 0.18},
-                                       hoverinfo="skip", showlegend=False))
+                                       marker={"size": 28, "color": color, "opacity": 0.25,
+                                               "line": {"color": "#FFFFFF", "width": 3}},
+                                       name=f"Selected robot {rid+1:02d}",
+                                       hovertemplate=f"Selected robot {rid+1:02d}<extra></extra>",
+                                       showlegend=False))
 
     eye = {"x": 0.0, "y": 0.02, "z": 2.7} if top_down else {"x": 1.55, "y": -1.85, "z": 1.45}
     fig.update_layout(
-        height=650,
+        height=610,
         margin={"l": 0, "r": 0, "t": 0, "b": 0},
-        paper_bgcolor="#111722",
+        paper_bgcolor="#080D19",
         scene={
-            "bgcolor": "#111722",
+            "bgcolor": "#080D19",
             "xaxis": {"range": [-1.2, 20.2], "visible": False},
             "yaxis": {"range": [-1.2, 20.2], "visible": False},
             "zaxis": {"range": [-0.4, 3.6], "visible": False},

@@ -1,6 +1,6 @@
 # HiveMine
 
-### An autonomous, decentralised multi-agent warehouse intelligence system
+### A peer-coordinated multi-agent warehouse digital twin
 
 HiveMine is a reproducible warehouse digital twin built for the **Neptune North Challenge at GreatUniHack**. Its five robot agents negotiate fulfillment work over a simulated peer network, navigate a shared 20 × 20 warehouse, and continue using their local knowledge when communication links fail.
 
@@ -74,12 +74,12 @@ When connectivity returns, robots exchange local task, bid and claim state. Comp
 HiveMine now opens to a simple three-area product experience:
 
 - **Home** — the interactive Plotly 3D warehouse, Start/Pause/Reset controls, speed, a plain-English activity feed, and a guided walkthrough.
-- **Explore** — choose one of the five robots to inspect its real task, route, battery, destination and reason for choosing work. Its local messages and task knowledge are tucked into **Technical details**.
-- **Experiment** — simulate a network failure, split or isolate robots, disconnect everyone, add delay or packet loss, then restore communication. The 3D links, group membership and progress figures come from the live simulator.
+- **Explore** — **Robot Perspective** shows one robot's actual local task, bids, claims, neighbours, delivered messages and recorded decision; the simulator's global task registry is clearly separated for comparison. The alternate **3D Warehouse** mode retains the live map view.
+- **Chaos Lab** — split or isolate the peer network, trigger a total blackout, vary latency and packet loss, block an aisle, or fail a robot. Restore network links and inspect actual experiment deltas, a downloadable after-action report and live 3D group state.
 
 The 3D scene shows actual robot positions, planned paths, destinations, delivery task states, shelf racks, packing and charging stations, obstacles and active/broken peer links. Toggle routes, network links and tasks independently. Drag to rotate, scroll to zoom, right-drag to pan, use the camera toggle for a top-down view, or reset the camera from Plotly's toolbar. Robot movement and activity updates follow actual model ticks; Plotly transitions smooth the displayed position changes.
 
-Use **Show me how HiveMine works** for a seven-stage, real-simulation walkthrough, including any observed claim conflict. The Experiment area includes seeded comparison scenarios, warehouse shocks and JSON/CSV run exports.
+Use **Show me how HiveMine works** for a seven-stage, real-simulation walkthrough, including any observed claim conflict. **START 60-SECOND JUDGE DEMO** runs a repeatable, tick-driven normal/partition/recovery story with pause, continue and replay controls. The Chaos Lab also includes seeded comparison scenarios and JSON run exports.
 
 ## Architecture
 

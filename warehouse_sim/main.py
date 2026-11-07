@@ -40,7 +40,7 @@ def run_simulation(ticks: int = 200, inject_shocks: bool = False, seed: int = 42
         inject_shocks: Whether to inject shocks during the run.
     """
     print("=" * 60)
-    print("  HIVEMINE | DECENTRALISED WAREHOUSE INTELLIGENCE")
+    print("  HIVEMINE | PEER-COORDINATED WAREHOUSE DIGITAL TWIN")
     print("=" * 60)
     print("Grid: 20x20 | Robots: 5 | Shelves: 10 | Docks: 2 | Seed: {}".format(seed))
     if demo_network:
@@ -134,7 +134,7 @@ def run_simulation(ticks: int = 200, inject_shocks: bool = False, seed: int = 42
 def main() -> None:
     """Parse CLI arguments and run the simulation."""
     parser = argparse.ArgumentParser(
-        description="HiveMine decentralised multi-agent warehouse simulation"
+        description="HiveMine peer-coordinated multi-agent warehouse simulation"
     )
     parser.add_argument(
         "--ticks", type=int, default=200, help="Number of simulation ticks"

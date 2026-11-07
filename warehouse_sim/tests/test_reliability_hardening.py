@@ -3,6 +3,7 @@
 import pytest
 
 from warehouse_sim.model import WarehouseModel
+from warehouse_sim.events import block_cell, flood_urgent_orders, force_drain, inject_deadlock, kill_robot
 from warehouse_sim.network import MessageType
 
 
@@ -27,6 +28,97 @@ def test_inventory_rejects_invalid_quantities_and_robots():
     assert not model.inventory_agent.reserve(shelf, 0, "SKU-001", -1)
     assert not model.inventory_agent.reserve(shelf, 99, "SKU-001", 1)
     assert not model.inventory_agent.decrement_stock(shelf, "SKU-001", -1)
+
+
+def test_deadlock_shock_only_repositions_idle_unreserved_robots():
+    """The seeded shock must preserve tasks and charger reservations of live robots."""
+    model = WarehouseModel(seed=42, persist_log=False)
+    deadlock_result = None
+    for tick in range(1, 201):
+        model.step()
+        if tick == 50:
+            kill_robot(model, 2)
+        elif tick == 80:
+            block_cell(model, (5, 6))
+        elif tick == 110:
+            force_drain(model, 0)
+        elif tick == 140:
+            flood_urgent_orders(model, 10)
+        elif tick == 170:
+            deadlock_result = inject_deadlock(model)
+
+        for robot in model.robots.values():
+            if robot.status == "CHARGING":
+                assert robot.pos_tuple == robot._charging_dock
+                assert robot.pos_tuple in model.charging_docks
+
+    assert deadlock_result is not None
+    if "error" not in deadlock_result:
+        for robot_id in (deadlock_result["robot_a"], deadlock_result["robot_b"]):
+            assert model.robots[robot_id].current_task is None
+            assert model.robots[robot_id]._charging_dock is None
+    robot = model.robots[0]
+    assert robot._charging_dock is None or robot.status in (
+        "EN_ROUTE_TO_CHARGE", "CHARGING", "WAITING_FOR_CHARGE", "NEEDS_CHARGE"
+    )
+
+
+def test_expired_or_failed_robot_claims_reopen_orphaned_order():
+    model = WarehouseModel(seed=7, persist_log=False)
+    model.order_agent.receive_order("SKU-001", 1, "normal")
+    task = model.order_agent.all_tasks[0]
+    task.status = "IN_PROGRESS"
+    task.assigned_robot = 2
+    model.robots[2].status = "FAILED"
+    for robot in model.robots.values():
+        robot.local_task_knowledge[task.task_id] = {
+            "task_id": task.task_id,
+            "sku": task.sku,
+            "qty": task.qty,
+            "priority": task.priority,
+            "priority_rank": task.priority_rank,
+            "arrival_tick": task.arrival_tick,
+            "shelf_location": list(model.shelf_locations[0]),
+            "owner": 2,
+            "bids": {},
+            "claims": {2: 4.0},
+            "claim_expiry": {2: 100},
+            "announce_tick": 0,
+            "completed": False,
+        }
+
+    model.robots[0]._record_claim({"task_id": task.task_id, "robot_id": 2, "score": 1.0})
+    model.robots[0]._merge_state({"tasks": [{
+        "task_id": task.task_id,
+        "task": {"owner": 2, "claim_expiry": {"2": 100}, "completed": False},
+        "bids": {},
+        "claims": {"2": 4.0},
+    }]})
+    model.step()
+
+    assert 2 not in model.robots[0].local_task_knowledge[task.task_id]["claims"]
+    assert task.assigned_robot == -1
+    assert task.status != "IN_PROGRESS"
+
+
+def test_failed_robot_obstacle_reroutes_seeded_aisle_traffic():
+    model = WarehouseModel(seed=42, persist_log=False)
+    failure = None
+    for tick in range(1, 241):
+        if tick == 31:
+            failure = kill_robot(model, 2)
+        model.step()
+
+    failed_cell = tuple(failure["failed_position"])
+    assert failed_cell in model.blocked_cells
+    assert failure["robots_rerouted"] > 0
+    assert len(model.completed_task_ids) > 0
+    assert model.traffic_controller.collision_count == 0
+    assert all(
+        failed_cell not in robot.current_path[robot.path_index:]
+        for robot in model.robots.values()
+        if robot.status != "FAILED"
+    )
 
 
 def test_all_customer_skus_exist_in_initial_inventory():

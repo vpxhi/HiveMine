@@ -6,7 +6,7 @@ Responsibility: Owns the space-time reservation table, plans routes using A*,
 escalates to CBS on conflict, and reroutes robots when aisles are blocked.
 
 PEAS Formulation:
-    Performance: Zero collisions, zero deadlocks, minimized total path cost.
+    Performance: Minimize observed collisions and deadlocks while maintaining safe routes.
     Environment: Grid map, reservation table, other robots' planned paths.
     Actuators: plan_route(), reroute(), hold_at_node().
     Sensors: Robot positions, aisle-block events, active reservations.
@@ -28,10 +28,11 @@ if TYPE_CHECKING:
 
 class TrafficControllerAgent(mesa.Agent):
     """
-    Manages collision-free multi-robot navigation across the warehouse grid.
+    Coordinates multi-robot navigation and collision avoidance across the warehouse grid.
 
     Uses A* for single-robot routing and escalates to CBS when conflicts
-    are detected. Maintains a reservation table to prevent collisions.
+    are detected. Reservations reduce conflicting moves; outcomes are measured
+    by the simulation and are not a physical safety guarantee.
     """
 
     def __init__(self, model: WarehouseModel) -> None:
