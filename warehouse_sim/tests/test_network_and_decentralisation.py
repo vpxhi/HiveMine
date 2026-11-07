@@ -110,6 +110,54 @@ def test_partitioned_claim_conflict_has_deterministic_winner():
     robot._record_claim({"task_id": 93, "robot_id": 4, "score": 5.0})
     assert robot.local_task_knowledge[93]["owner"] == 4
     assert model.network.conflicts_detected == 1
+    assert model.network.conflicts_resolved == 1
+
+
+def test_repeated_conflict_state_sync_does_not_duplicate_resolution_metrics():
+    model = WarehouseModel(seed=5)
+    robot = model.robots[0]
+    robot.local_task_knowledge[95] = {
+        "task_id": 95, "completed": False, "bids": {},
+        "claims": {0: 9.0}, "claim_expiry": {0: 30},
+    }
+    sync = {"tasks": [{
+        "task_id": 95,
+        "task": {"task_id": 95, "completed": False, "claim_expiry": {"4": 30}},
+        "bids": {"4": 5.0}, "claims": {"4": 5.0},
+    }]}
+    robot._merge_state(sync)
+    reconciliations = model.network.reconciliation_count
+    robot._merge_state(sync)
+    assert model.network.conflicts_detected == 1
+    assert model.network.conflicts_resolved == 1
+    assert model.network.reconciliation_count == reconciliations
+
+
+def test_invalid_claim_score_is_rejected():
+    model = WarehouseModel(seed=5)
+    model.robots[0].local_task_knowledge[96] = {"task_id": 96, "bids": {}, "claims": {}}
+    model.robots[0]._record_claim({"task_id": 96, "robot_id": 1, "score": float("nan")})
+    assert model.robots[0].local_task_knowledge[96]["claims"] == {}
+    assert model.auction_metrics["invalid_auction_messages_rejected"] == 1
+
+
+def test_auction_ties_are_broken_by_lowest_robot_id():
+    model = WarehouseModel(seed=5)
+    for rid in (0, 1):
+        robot = model.robots[rid]
+        robot.local_task_knowledge[97] = {
+            "task_id": 97, "sku": "SKU-001", "qty": 1, "priority": "normal",
+            "priority_rank": 1, "arrival_tick": 0, "shelf_location": [3, 4],
+            "announce_tick": 0, "bids": {0: 5.0, 1: 5.0}, "claims": {},
+        }
+        robot.local_task_queue = [97]
+    model.current_tick = 2
+    for rid in (0, 1):
+        model.robots[rid]._last_bid_tick[97] = model.current_tick
+    model.robots[0].decide()
+    model.robots[1].decide()
+    assert model.robots[0].current_task.task_id == 97
+    assert model.robots[1].current_task is None
 
 
 def test_reconciliation_stops_loser_and_releases_its_shelf():
@@ -153,6 +201,7 @@ def test_duplicate_completion_is_idempotent_for_inventory():
     model.order_agent.receive_order("SKU-001", 1, "normal")
     task = model.order_agent.task_queue[0]
     task.shelf_location = model.inventory_agent.locate(task.sku)
+    assert model.inventory_agent.reserve(task.shelf_location, 0, task.sku, task.qty)
     quantity_before = model.inventory_agent.shelf_state[task.shelf_location]["skus"][task.sku]
     assert model.complete_distributed_task(0, task.task_id)
     assert not model.complete_distributed_task(1, task.task_id)
@@ -167,6 +216,8 @@ def test_fault_injection_does_not_claim_recovery_immediately():
     assert model.shocks_recovered == 0
     assert not event["recovered"]
     restore_network(model)
+    model.step()
+    assert event["status"] == "injected"
     model.step()
     assert event["status"] == "recovered"
     assert model.shocks_recovered == 1

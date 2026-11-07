@@ -2,11 +2,11 @@
 # Install: pip install -r requirements.txt
 
 mesa>=3.0
-streamlit>=1.30
+# Dashboard uses fragments, horizontal containers, and Plotly chart accessibility/layout arguments.
+streamlit>=1.65
 # Required by modern Streamlit; avoids launch failures with an older global install.
 starlette>=0.40.0,<1.0
 plotly>=5.18
-matplotlib>=3.8
-networkx>=3.2
 numpy>=1.26
+pandas>=2.0
 pytest>=7.4

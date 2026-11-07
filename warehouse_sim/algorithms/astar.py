@@ -5,12 +5,9 @@ Owner: Rohith (cb.sc.u4cse23018) — Robot Intelligence
 Responsibility: Provides single-robot shortest-path computation on a 2D grid
 with support for blocked cells and time-expanded constraints (for CBS integration).
 
-Algorithm Justification (vs. Dijkstra):
-    A* uses a Manhattan-distance heuristic that is admissible and consistent on
-    4-directional grids. This prunes the search space significantly compared to
-    Dijkstra, which expands nodes uniformly in all directions regardless of goal
-    location. For point-to-point warehouse queries, A* typically explores 40-60%
-    fewer nodes than Dijkstra on a 20x20 grid.
+Algorithm note:
+    A* uses the admissible Manhattan-distance heuristic for four-directional
+    grids. This project does not currently publish comparative search benchmarks.
 """
 
 from __future__ import annotations

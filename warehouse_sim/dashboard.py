@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 from html import escape
 from typing import Any, Dict, List
 
@@ -35,25 +34,24 @@ st.set_page_config(page_title="HiveMine", page_icon="H", layout="wide", initial_
 
 st.html("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
 :root { --hm-ink:#edf1f7; --hm-muted:#9aa6b8; --hm-blue:#76a9ff; --hm-green:#68d8a2; --hm-amber:#f0bd68; --hm-red:#ef7884; --hm-purple:#b5a0ff; }
 .stApp { background: radial-gradient(ellipse at 50% -28%, #25334b 0%, #111722 53%); color:var(--hm-ink); }
 [data-testid="stHeader"] { background:transparent; }
 .block-container { max-width:1680px; padding-top:1.35rem; padding-bottom:2rem; }
-h1,h2,h3 { font-family:'Manrope',sans-serif !important; letter-spacing:-.035em; }
-p,div,label,button { font-family:'DM Sans',sans-serif; }
-.hm-brand { color:#f4f6fa; font-family:'Manrope',sans-serif; font-size:1.75rem; font-weight:800; letter-spacing:-.055em; }
+h1,h2,h3 { font-family:'Segoe UI',Arial,sans-serif !important; letter-spacing:-.035em; }
+p,div,label,button { font-family:'Segoe UI',Arial,sans-serif; }
+.hm-brand { color:#f4f6fa; font-family:'Segoe UI',Arial,sans-serif; font-size:1.75rem; font-weight:800; letter-spacing:-.055em; }
 .hm-tagline { color:#a9b5c7; font-size:1rem; margin-top:.18rem; }
 .hm-eyebrow { color:#a996ff; font-size:.72rem; font-weight:700; letter-spacing:.14em; text-transform:uppercase; }
 .hm-hero { border:1px solid #364255; border-radius:22px; padding:1.35rem 1.55rem; background:linear-gradient(112deg,rgba(35,47,66,.88),rgba(24,32,45,.88)); margin:.45rem 0 1rem; }
-.hm-hero-title { color:#f3f5f9; font:700 clamp(1.25rem,2.3vw,2rem) 'Manrope',sans-serif; letter-spacing:-.045em; margin:.22rem 0 .22rem; }
+.hm-hero-title { color:#f3f5f9; font:700 clamp(1.25rem,2.3vw,2rem) 'Segoe UI',Arial,sans-serif; letter-spacing:-.045em; margin:.22rem 0 .22rem; }
 .hm-hero-copy { color:#b4bfd0; font-size:.97rem; line-height:1.5; margin:0; max-width:860px; }
 .hm-event { padding:.68rem 0; border-bottom:1px solid rgba(135,151,176,.13); color:#d4dbe5; line-height:1.4; font-size:.88rem; }
 .hm-event-time { color:#9e8df4; font-size:.73rem; font-weight:700; margin-right:.35rem; }
 .hm-network { display:inline-flex; align-items:center; gap:.5rem; border:1px solid #364355; border-radius:999px; padding:.42rem .75rem; color:#dce3ec; background:#1a2230; font-size:.85rem; }
 .hm-dot { width:.48rem; height:.48rem; border-radius:50%; display:inline-block; background:#68d8a2; }
 div[data-testid="stMetric"] { border-radius:15px; border-color:rgba(131,150,179,.17); background:rgba(27,36,50,.78); padding:.8rem .95rem; }
-div[data-testid="stMetricValue"] { font-family:'Manrope',sans-serif; }
+div[data-testid="stMetricValue"] { font-family:'Segoe UI',Arial,sans-serif; }
 .stButton>button { min-height:2.55rem; border-radius:12px; transition:all .16s ease; }
 .stButton>button:hover { transform:translateY(-1px); border-color:#a996ff; }
 div[role="radiogroup"] label, div[data-testid="stSegmentedControl"] label { border-radius:11px !important; }
@@ -72,6 +70,8 @@ ROBOT_STATES = {
     "DROPPING": "Handing over a delivery",
     "RETURNING": "Returning to its route",
     "NEEDS_CHARGE": "Heading to charge",
+    "EN_ROUTE_TO_CHARGE": "Travelling to charge",
+    "WAITING_FOR_CHARGE": "Waiting for a charging dock",
     "CHARGING": "Charging",
     "FAILED": "Out of service",
 }
@@ -86,6 +86,9 @@ def fresh_state() -> None:
     st.session_state.main_navigation = "Home"
     st.session_state.selected_robot = 0
     st.session_state.top_down = False
+    st.session_state.show_network_layer = True
+    st.session_state.show_routes_layer = True
+    st.session_state.show_tasks_layer = True
     st.session_state.activity = [{"tick": 0, "text": "The warehouse is ready. Start the simulation to see the robots at work."}]
     st.session_state.activity_cursor = 0
     st.session_state.last_status = {rid: robot.status for rid, robot in st.session_state.model.robots.items()}
@@ -93,10 +96,16 @@ def fresh_state() -> None:
     st.session_state.guided_stage = 0
     st.session_state.guided_actions = set()
     st.session_state.guide_partition_baseline = {"completed": 0, "decisions": 0}
+    st.session_state.comparison_results = None
 
 
 if "model" not in st.session_state:
     fresh_state()
+for _key in ("show_network_layer", "show_routes_layer", "show_tasks_layer"):
+    if _key not in st.session_state:
+        st.session_state[_key] = True
+if "comparison_results" not in st.session_state:
+    st.session_state.comparison_results = None
 
 model: WarehouseModel = st.session_state.model
 
@@ -122,17 +131,21 @@ def friendly_message(message: Dict[str, Any]) -> str | None:
     if action == "task_announcement":
         return f"A new delivery job is ready for the robots to consider."
     if action == "distributed_task_claim":
-        return f"{robot or 'A robot'} accepted a job after comparing its distance and battery with nearby robots."
+        return f"{robot or 'A robot'} won delivery {payload.get('task_id')} with a bid of {float(payload.get('bid', 0)):.2f}."
+    if action == "auction_bid_calculated":
+        return f"{robot or 'A robot'} submitted a bid of {float(payload.get('score', 0)):.2f} for delivery {payload.get('task_id')}."
     if action == "task_complete":
         return f"{robot or 'A robot'} completed a delivery."
     if action == "state_reconciled":
         return f"{robot or 'A robot'} compared notes and updated what it knows."
     if action == "task_conflict_reconciled":
-        return "Two robots had chosen the same job. They compared bids and kept one clear owner."
+        return f"Robots had overlapping claims on delivery {payload.get('task_id')}. Robot {int(payload.get('winner', 0))+1:02d} kept it by lowest bid, then robot ID."
     if action == "duplicate_claim_detected":
         return "Two disconnected teams chose the same job. HiveMine recorded the overlap for later reconciliation."
     if action == "reconnection_reconciliation_started":
         return "Communication is back. Robots are exchanging updates and checking their job lists."
+    if action == "state_sync_completed":
+        return f"Robots finished exchanging state updates in {payload.get('duration_ticks', '—')} ticks."
     if action == "recovery_verified":
         return f"HiveMine confirmed that the {payload.get('shock_type', 'disruption').replace('_', ' ')} response worked."
     shock = payload.get("shock_type")
@@ -155,12 +168,14 @@ def friendly_message(message: Dict[str, Any]) -> str | None:
 
 def sync_activity() -> None:
     messages = model.message_log
-    cursor = min(st.session_state.activity_cursor, len(messages))
-    for item in messages[cursor:]:
+    cursor = st.session_state.activity_cursor
+    for item in messages:
+        if item.get("event_id", 0) <= cursor:
+            continue
         text = friendly_message(item)
         if text:
             add_activity(text, int(item.get("tick", model.current_tick)))
-    st.session_state.activity_cursor = len(messages)
+    st.session_state.activity_cursor = model._message_log_sequence
     for rid, robot in model.robots.items():
         before = st.session_state.last_status.get(rid)
         if before != robot.status:
@@ -170,6 +185,10 @@ def sync_activity() -> None:
                 add_activity(f"Robot {rid+1:02d} picked its item and is delivering it to packing.")
             elif robot.status == "CHARGING":
                 add_activity(f"Robot {rid+1:02d} is charging so it can keep working safely.")
+            elif robot.status == "EN_ROUTE_TO_CHARGE":
+                add_activity(f"Robot {rid+1:02d} is travelling to its reserved charging dock.")
+            elif robot.status == "WAITING_FOR_CHARGE":
+                add_activity(f"Robot {rid+1:02d} is waiting for a free charging dock.")
             elif robot.status == "IDLE" and before not in (None, "IDLE"):
                 add_activity(f"Robot {rid+1:02d} is ready for another delivery.")
             st.session_state.last_status[rid] = robot.status
@@ -201,6 +220,21 @@ def set_running(running: bool) -> None:
         st.session_state.started = True
 
 
+def add_delivery() -> None:
+    stocked_skus = sorted({sku for shelf in model.inventory_agent.shelf_state.values()
+                           for sku, quantity in shelf["skus"].items() if quantity > 0})
+    if not stocked_skus:
+        st.error("There are no stocked products available to add.")
+        return
+    sku = model.random.choice(stocked_skus)
+    model.order_agent.receive_order(sku, 1, "normal")
+    model.log_message("CustomerAgent", "OrderAgent", {
+        "action": "place_order", "sku": sku, "qty": 1, "priority": "normal"})
+    sync_activity()
+    st.session_state.started = True
+    st.session_state.running = True
+
+
 def reset_demo() -> None:
     st.session_state.main_navigation = "Home"
     fresh_state()
@@ -224,29 +258,42 @@ def apply_restore() -> None:
 def render_robot_detail(robot_id: int) -> None:
     robot = model.robots[robot_id]
     state = model.get_grid_state()["robots"][robot_id]
-    disconnected = model.network.partition_count > 1
+    group_size = len(model.network.connected_robot_ids(robot_id))
+    split = model.network.partition_count > 1
     destination = state["destination"]
     if destination == model.packing_station:
         destination_text = "Packing station"
     elif destination:
         shelf_index = model.shelf_locations.index(tuple(destination)) if tuple(destination) in model.shelf_locations else -1
         destination_text = f"Shelf {chr(65+shelf_index)}" if shelf_index >= 0 else f"Grid location {destination}"
-    elif robot.status == "CHARGING":
-        destination_text = "Charging dock"
+    elif robot._charging_dock:
+        destination_text = f"Charging dock at {robot._charging_dock}"
+    elif robot.status == "WAITING_FOR_CHARGE":
+        destination_text = "Waiting for a free charging dock"
     else:
         destination_text = "Waiting for a delivery"
 
     status = ROBOT_STATES.get(robot.status, robot.status.replace("_", " ").title())
-    if disconnected and robot.status != "FAILED":
-        status = "Working independently" if robot.current_task else "Waiting independently"
+    if split and robot.status != "FAILED":
+        status = ("Working independently" if robot.current_task else "Waiting independently") if group_size == 1 else \
+                 ("Working with its group" if robot.current_task else "Waiting with its group")
     st.markdown(f"### Robot {robot_id+1:02d}")
     st.markdown(f"**{status}**")
     st.caption(f"Current activity · {ROBOT_STATES.get(robot.status, 'Working')}")
     st.metric("Battery", f"{robot.battery:.0f}%")
-    st.write(f"**Communication:** {'Independent' if disconnected else 'Connected'}")
+    node = next(item for item in model.get_network_state()["nodes"] if item["robot_id"] == robot_id)
+    unstable = bool(model.network.latency or model.network.packet_loss)
+    communication = ("Delayed or unreliable" if unstable else "Connected to all robots") if not split else \
+                    ("Working alone" if group_size == 1 else f"Connected to an isolated group of {group_size}")
+    st.write(f"**Communication:** {communication}")
+    st.write(f"**Position:** {robot.pos_tuple}")
+    st.write(f"**Current task:** Delivery {robot.current_task.task_id}" if robot.current_task else "**Current task:** None")
     st.write(f"**Destination:** {destination_text}")
-    if disconnected:
+    st.write(f"**Messages:** {node['messages_sent']} sent · {node['messages_received']} received")
+    if split:
         st.info("This robot cannot receive updates from the other group. It is using the jobs and messages it already has.", icon=":material/wifi_off:")
+    elif unstable:
+        st.warning("Messages may arrive late or be lost. The robot keeps using its local state.", icon=":material/wifi_off:")
     if robot.current_task:
         st.write("**Why this robot chose the job**")
         st.write("It had the best bid among the robots it could reach, based on distance, battery and job priority.")
@@ -255,6 +302,48 @@ def render_robot_detail(robot_id: int) -> None:
         st.write("It has no unclaimed job in its current local list, or it is restoring its battery.")
 
     with st.expander("Technical details"):
+        st.caption("Auction bids use Manhattan distance + 0.12 × battery used − 4 for an urgent job. Lowest bid wins; robot ID breaks ties.")
+        relevant_task_id = getattr(robot.current_task, "task_id", None)
+        if relevant_task_id is None and robot.local_task_queue:
+            relevant_task_id = robot.local_task_queue[-1]
+        if relevant_task_id is not None:
+            local_task = robot.local_task_knowledge.get(relevant_task_id, {})
+            own_bid = local_task.get("bids", {}).get(robot_id)
+            if own_bid is not None:
+                st.write(f"**Robot {robot_id+1:02d}'s calculated bid:** {float(own_bid):.2f}")
+            task_events = [entry for entry in model.message_log
+                           if entry.get("payload", {}).get("task_id") == relevant_task_id
+                           and entry.get("payload", {}).get("action") in (
+                               "auction_bid_calculated", "auction_bid_excluded",
+                               "distributed_task_claim", "task_conflict_reconciled")]
+            records: Dict[int, Dict[str, Any]] = {}
+            outcome = "No winner recorded"
+            for entry in task_events:
+                payload = entry["payload"]
+                rid = payload.get("robot_id")
+                if payload.get("action") == "task_conflict_reconciled":
+                    outcome = f"Conflict resolved to Robot {int(payload['winner'])+1:02d}"
+                    continue
+                if payload.get("action") == "distributed_task_claim":
+                    outcome = f"Robot {int(payload.get('robot_id', 0))+1:02d} won"
+                    for bid_rid, bid in payload.get("bids", {}).items():
+                        records.setdefault(int(bid_rid), {"Robot": f"Robot {int(bid_rid)+1:02d}", "Bid": None, "Not bidding": "", "Outcome": "Participated"})["Bid"] = bid
+                    continue
+                if rid is None:
+                    continue
+                row = records.setdefault(int(rid), {"Robot": f"Robot {int(rid)+1:02d}", "Bid": None, "Not bidding": "", "Outcome": "No bid received"})
+                if payload.get("action") == "auction_bid_calculated":
+                    row["Bid"] = payload.get("score")
+                    row["Outcome"] = "Bid submitted"
+                elif payload.get("action") == "auction_bid_excluded":
+                    row["Not bidding"] = payload.get("reason", "Not eligible")
+                    row["Outcome"] = "Excluded"
+            st.markdown(f"**Auction for delivery {relevant_task_id}** · {outcome}")
+            if records:
+                auction_table = pd.DataFrame(sorted(records.values(), key=lambda row: row["Robot"]))
+                st.dataframe(auction_table, hide_index=True, width="stretch")
+            else:
+                st.caption("No auction bids are recorded for this task yet.")
         st.write("**What this robot currently knows**")
         st.json({
             "position": robot.pos_tuple,
@@ -295,14 +384,108 @@ def render_network_groups() -> None:
                 st.write(names)
 
 
+def render_conflict_history() -> None:
+    entries = [entry for entry in model.message_log
+               if entry.get("payload", {}).get("action") == "task_conflict_reconciled"]
+    if not entries:
+        st.caption("No overlapping claims have been recorded in this run.")
+        return
+    rows = []
+    for entry in entries:
+        payload = entry["payload"]
+        claims = ", ".join(
+            f"Robot {int(robot_id)+1:02d}: {float(score):.2f}"
+            for robot_id, score in payload.get("claims", {}).items())
+        rows.append({"Tick": entry["tick"], "Delivery": payload.get("task_id"),
+                     "Competing bids": claims, "Rule": payload.get("rule", "lowest bid, then robot ID"),
+                     "Final owner": f"Robot {int(payload.get('winner', 0))+1:02d}"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
 def render_metrics() -> None:
     kpis = model.get_kpis()
     with st.container(horizontal=True):
-        st.metric("Active robots", f"{sum(r.status not in ('IDLE', 'FAILED', 'CHARGING') for r in model.robots.values())} / 5", border=True)
+        st.metric("Active robots", f"{kpis['active_robots']} / 5", border=True)
         st.metric("Deliveries completed", kpis["orders_completed"], border=True)
         st.metric("Deliveries waiting", kpis["pending_tasks"], border=True)
         status = "Connected" if model.network.partition_count == 1 else "Working independently"
         st.metric("Communication", status, border=True)
+
+
+def render_scene_layers() -> None:
+    """Offer simple toggles for the dynamic layers in the warehouse view."""
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.checkbox("Robot routes", key="show_routes_layer")
+        st.checkbox("Network links", key="show_network_layer")
+        st.checkbox("Delivery tasks", key="show_tasks_layer")
+
+
+def warehouse_figure(selected_robot: int, top_down: bool) -> go.Figure:
+    return build_warehouse_scene(
+        model, selected_robot, top_down,
+        show_network=st.session_state.show_network_layer,
+        show_routes=st.session_state.show_routes_layer,
+        show_tasks=st.session_state.show_tasks_layer)
+
+
+def run_comparison_scenarios(seed: int = 42, ticks: int = 120) -> Dict[str, Dict[str, Any]]:
+    """Run identical seeded demand for normal, outage, and recovery scenarios."""
+    results: Dict[str, Dict[str, Any]] = {}
+    reference_workload = None
+    for scenario in ("Normal network", "Network partition", "After recovery"):
+        comparison_model = WarehouseModel(seed=seed, persist_log=False)
+        for tick in range(1, ticks + 1):
+            if tick == 41 and scenario != "Normal network":
+                network_partition(comparison_model, 2)
+            if tick == 81 and scenario == "After recovery":
+                restore_network(comparison_model)
+            comparison_model.step()
+        kpis = comparison_model.get_kpis()
+        workload = [(task.arrival_tick, task.sku, task.qty, task.priority)
+                    for task in comparison_model.order_agent.all_tasks]
+        if reference_workload is None:
+            reference_workload = workload
+        elif workload != reference_workload:
+            raise RuntimeError("Seeded comparison generated different customer workloads")
+        network_metrics = comparison_model.get_network_state()["metrics"]
+        results[scenario] = {
+            "Tasks created": kpis["total_tasks_created"],
+            "Tasks completed": kpis["orders_completed"],
+            "Tasks remaining": kpis["tasks_remaining"],
+            "Active robot utilization (%)": kpis["average_active_robot_utilisation_pct"],
+            "Avg completion time (ticks)": kpis["average_task_time"],
+            "Completed during partition": network_metrics["partition_tasks_completed"],
+            "Independent decisions": network_metrics["independent_decisions"],
+            "Messages dropped": network_metrics["dropped"],
+            "Avg message delay (ticks)": network_metrics["average_message_delay_ticks"],
+            "Reconciliation duration (ticks)": (comparison_model.reconciliation_durations[-1]
+                                                 if comparison_model.reconciliation_durations else None),
+        }
+    return results
+
+
+def render_comparison() -> None:
+    with st.expander("Compare the same seeded workload across network conditions"):
+        st.caption("Runs three independent 120-tick simulations with seed 42 and identical generated customer demand. The partition starts at tick 41; recovery starts at tick 81. Outcomes are measured, not prefilled.")
+        if st.button("Run comparable scenarios", key="run_comparison"):
+            with st.spinner("Running three seeded simulation scenarios…"):
+                st.session_state.comparison_results = run_comparison_scenarios(seed=42, ticks=120)
+        results = st.session_state.comparison_results
+        if results:
+            table = pd.DataFrame(results).T
+            st.dataframe(table, width="stretch")
+            chart = go.Figure(go.Bar(
+                x=list(results),
+                y=[results[name]["Tasks completed"] for name in results],
+                marker_color=[PALETTE["blue"], PALETTE["purple"], PALETTE["green"]],
+                text=[f"{results[name]['Tasks completed']} completed · {results[name]['Tasks remaining']} remaining"
+                      for name in results], textposition="auto"))
+            chart.update_layout(title="Observed completed deliveries after 120 ticks",
+                                yaxis_title="Deliveries", paper_bgcolor="#111722",
+                                plot_bgcolor="#1A2230", font_color="#EDF1F7",
+                                margin={"l": 10, "r": 10, "t": 45, "b": 10})
+            st.plotly_chart(chart, width="stretch",
+                            alt="Measured completed deliveries under normal, partitioned, and recovered network scenarios")
 
 
 @st.fragment(run_every=0.7 if st.session_state.running else None)
@@ -315,7 +498,8 @@ def home_live(selected_robot: int, top_down: bool, speed: int) -> None:
         with st.container(border=True):
             st.markdown("**Live warehouse**")
             st.caption("Drag to turn · scroll to zoom · right-drag to pan · use the chart toolbar to reset the camera")
-            fig = build_warehouse_scene(model, selected_robot, top_down)
+            render_scene_layers()
+            fig = warehouse_figure(selected_robot, top_down)
             st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": True, "responsive": True}, alt="Interactive 3D warehouse with live robot positions, routes, shelves and communication links")
     with side:
         render_activity_panel()
@@ -336,7 +520,8 @@ def explore_live(selected_robot: int, top_down: bool, speed: int) -> None:
     with scene:
         with st.container(border=True):
             st.markdown("**Five robots, one shared goal**")
-            fig = build_warehouse_scene(model, selected_robot, top_down)
+            render_scene_layers()
+            fig = warehouse_figure(selected_robot, top_down)
             st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": True, "responsive": True}, alt="Three-dimensional warehouse showing the selected robot and its live route")
     with detail:
         with st.container(border=True):
@@ -359,7 +544,8 @@ def experiment_live(selected_robot: int, top_down: bool, speed: int) -> None:
         with st.container(border=True):
             st.markdown("**The warehouse during the communication test**")
             st.caption("Teal links are active. Red dashed links are interrupted. Each colour identifies a communication group.")
-            fig = build_warehouse_scene(model, selected_robot, top_down)
+            render_scene_layers()
+            fig = warehouse_figure(selected_robot, top_down)
             st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": True, "responsive": True}, alt="Live warehouse showing robot routes and links that are active or interrupted")
     with side:
         with st.container(border=True):
@@ -372,7 +558,7 @@ def experiment_live(selected_robot: int, top_down: bool, speed: int) -> None:
 
 
 def next_guided_stage() -> None:
-    stage = min(5, st.session_state.guided_stage + 1)
+    stage = min(6, st.session_state.guided_stage + 1)
     st.session_state.guided_stage = stage
     if stage in st.session_state.guided_actions:
         return
@@ -388,11 +574,11 @@ def next_guided_stage() -> None:
         sync_activity()
     elif stage == 3:
         st.session_state.running = True
-    elif stage == 4:
+    elif stage == 5:
         restore_network(model)
         st.session_state.running = True
         advance_model(4)
-    elif stage == 5:
+    elif stage == 6:
         advance_model(8)
         st.session_state.running = False
     st.session_state.guided_actions.add(stage)
@@ -403,6 +589,7 @@ GUIDE_STAGES = [
     ("Choosing a robot for each job", "Each robot scores the work it knows about and negotiates with robots it can reach."),
     ("Communication interrupted", "The connection is split into two groups. Messages cannot cross the broken link."),
     ("Working independently", "Both groups keep using their local task lists and continue making decisions."),
+    ("Conflicting information", "Inspect any overlapping claims observed in this run. If none occurred, HiveMine reports that rather than creating a fake conflict."),
     ("Communication restored", "The robots exchange updates and compare any overlapping job claims."),
     ("Results from this run", "The figures below come from the live simulation, including work completed during the outage."),
 ]
@@ -425,11 +612,14 @@ def render_guided_demo() -> None:
 
     stage = st.session_state.guided_stage
     with st.container(border=True):
-        st.markdown(f"<div class='hm-eyebrow'>Guided walkthrough · Step {stage+1} of 6</div><div class='hm-hero-title'>{escape(GUIDE_STAGES[stage][0])}</div><p class='hm-hero-copy'>{escape(GUIDE_STAGES[stage][1])}</p>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hm-eyebrow'>Guided walkthrough · Step {stage+1} of {len(GUIDE_STAGES)}</div><div class='hm-hero-title'>{escape(GUIDE_STAGES[stage][0])}</div><p class='hm-hero-copy'>{escape(GUIDE_STAGES[stage][1])}</p>", unsafe_allow_html=True)
         if stage == 3:
             if st.button("Continue for 20 simulation ticks", key="guide_continue", width="stretch"):
                 advance_model(20)
-        if stage == 5:
+        if stage == 4:
+            st.markdown("**Observed claim conflicts**")
+            render_conflict_history()
+        if stage == 6:
             base = st.session_state.guide_partition_baseline
             network_metrics = model.get_network_state()["metrics"]
             st.success(f"During communication failure, robots completed {model.partition_tasks_completed - base['completed']} deliveries and made {model.partition_decisions - base['decisions']} independent job choices.")
@@ -438,7 +628,7 @@ def render_guided_demo() -> None:
         if controls[0].button("Previous", disabled=stage == 0, key="guide_previous", width="stretch"):
             st.session_state.guided_stage = max(0, stage - 1)
             st.rerun()
-        if controls[1].button("Next", disabled=stage == 5, key="guide_next", type="primary", width="stretch"):
+        if controls[1].button("Next", disabled=stage == 6, key="guide_next", type="primary", width="stretch"):
             next_guided_stage()
             st.rerun()
         if controls[2].button("Pause" if st.session_state.running else "Resume", key="guide_pause", width="stretch"):
@@ -497,6 +687,10 @@ with st.container(horizontal=True, vertical_alignment="bottom"):
             set_running(not st.session_state.running)
             st.rerun()
     st.button("Reset", width="content", icon=":material/restart_alt:", on_click=reset_demo)
+    if st.button("Add a delivery", width="content", icon=":material/add_box:",
+                 help="Create a real order from a product that is currently in stock"):
+        add_delivery()
+        st.rerun()
     st.slider("Simulation speed", 1, 4, key="speed", help="How many real simulation steps happen per update")
     render_communication_popover()
     st.button("Top-down" if not st.session_state.top_down else "Angled view", key="camera_toggle",
@@ -579,6 +773,16 @@ else:
             st.metric("Independent choices", network_metrics["independent_decisions"], border=True)
             st.metric("Overlapping job claims", network_metrics["conflicts_detected"], border=True)
             st.metric("Disconnected ticks", network_metrics["disconnected_ticks"], border=True)
+        kpis = model.get_kpis()
+        with st.container(horizontal=True):
+            st.metric("Time active on tasks", f"{kpis['average_active_robot_utilisation_pct']:.1f}%" if kpis["average_active_robot_utilisation_pct"] is not None else "Unavailable", border=True)
+            st.metric("Average delivery time", f"{kpis['average_task_time']:.1f} ticks" if kpis["average_task_time"] is not None else "Unavailable", border=True)
+            st.metric("Average message delay", f"{network_metrics['average_message_delay_ticks']:.1f} ticks" if network_metrics["average_message_delay_ticks"] is not None else "Unavailable", border=True)
+            st.metric("Reconciliation duration", f"{network_metrics['average_reconciliation_duration_ticks']:.1f} ticks" if network_metrics["average_reconciliation_duration_ticks"] is not None else "Unavailable", border=True)
+        auctions = kpis["auction_metrics"]
+        st.caption(f"{auctions['auctions']} auctions · {auctions['bids_submitted']} distinct robot bids · {auctions['successful_allocations']} task claims · {auctions['conflicts_resolved']} resolved conflicts · {auctions['duplicate_claims_prevented']} duplicate claims prevented")
+        with st.expander("Conflict details"):
+            render_conflict_history()
         phases = model.phase_metrics
         phase_names = list(phases)
         phase_rates = [phases[name]["tasks_completed"] / max(1, phases[name]["ticks"]) for name in phase_names]
@@ -603,6 +807,8 @@ else:
                                      file_name="hivemine-run.json", mime="application/json", width="stretch")
         downloads[1].download_button("Download run history (CSV)", history.to_csv(index=False),
                                      file_name="hivemine-history.csv", mime="text/csv", width="stretch")
+
+    render_comparison()
 
     experiment_live(selected_robot, top_down, speed)
 

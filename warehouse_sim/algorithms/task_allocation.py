@@ -5,14 +5,9 @@ Owner: Kalyan (cb.sc.u4cse23060) — Warehouse Intelligence
 Responsibility: Scores candidate robots for task assignment using a weighted
 multi-factor formula, and detects deadlocks via wait-for graph cycle detection.
 
-Algorithm Justification (vs. Random/Round-Robin):
-    Naive random or round-robin assignment ignores robot battery levels,
-    distances to target shelves, and current workloads. This causes avoidable
-    congestion (distant robots crossing paths with closer ones) and premature
-    battery deaths (low-battery robots assigned heavy tasks). The scored
-    allocation function reduces average task completion time by 30-50% in
-    simulation benchmarks by preferring nearby, well-charged, lightly-loaded
-    robots and boosting urgent task priority.
+Legacy scoring utilities retained for comparison and compatibility. Ordinary
+task assignment is performed by each robot's local CBAA-inspired bid in
+``agents/robot_agent.py``; no performance improvement is claimed here.
 """
 
 from __future__ import annotations

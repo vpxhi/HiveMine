@@ -29,10 +29,20 @@ class NetworkSimulator:
         self._pending: List[AgentMessage] = []
         self.activity_log: List[AgentMessage] = []
         self.inboxes: Dict[str, Deque[AgentMessage]] = {node: deque() for node in self.nodes}
+        self.robot_message_counts: Dict[int, Dict[str, int]] = {
+            int(node.split("-")[1]): {"sent": 0, "received": 0}
+            for node in self.nodes if node.startswith("Robot-")
+        }
         self.counters = {"sent": 0, "delivered": 0, "dropped": 0, "delayed": 0}
+        self.delivered_delay_ticks = 0
+        self.state_sync_received = 0
         self.disconnected_ticks = 0
         self.reconciliation_count = 0
         self.conflicts_detected = 0
+        self.conflicts_resolved = 0
+        self.duplicate_claims_prevented = 0
+        self._conflict_keys: Set[Tuple[int, Tuple[int, ...]]] = set()
+        self._resolved_conflict_keys: Set[Tuple[int, Tuple[int, ...]]] = set()
         self._last_partitions = self.partition_count
 
     def connect(self, a: str, b: str) -> None:
@@ -91,6 +101,10 @@ class NetworkSimulator:
         route = self._route(sender, recipient)
         self._sequence += 1
         self.counters["sent"] += 1
+        if sender.startswith("Robot-"):
+            sender_id = int(sender.split("-")[1])
+            if sender_id in self.robot_message_counts:
+                self.robot_message_counts[sender_id]["sent"] += 1
         message = AgentMessage(f"m{self._sequence:08d}", sender, recipient, message_type,
                                dict(payload), tick, tick + self.default_ttl,
                                deliver_at=tick + self.latency + 1, path=route or ())
@@ -130,6 +144,10 @@ class NetworkSimulator:
                     message.delivery_status = "delivered"
                     self.inboxes[message.recipient].append(message)
                     self.counters["delivered"] += 1
+                    self.delivered_delay_ticks += max(0, tick - message.created_tick)
+                    if message.recipient.startswith("Robot-"):
+                        recipient_id = int(message.recipient.split("-")[1])
+                        self.robot_message_counts[recipient_id]["received"] += 1
                 else:
                     message.delivery_status = "dropped"
                     self.counters["dropped"] += 1
@@ -143,6 +161,23 @@ class NetworkSimulator:
         messages = list(inbox)
         inbox.clear()
         return messages
+
+    def record_claim_conflict(self, task_id: int, robot_ids: Iterable[int]) -> Tuple[Tuple[int, Tuple[int, ...]], bool]:
+        """Count each distinct competing claim set once, despite repeated syncs."""
+        key = (int(task_id), tuple(sorted({int(rid) for rid in robot_ids})))
+        if key not in self._conflict_keys:
+            self._conflict_keys.add(key)
+            self.conflicts_detected += 1
+            return key, True
+        return key, False
+
+    def record_claim_resolution(self, key: Tuple[int, Tuple[int, ...]]) -> bool:
+        """Count one deterministic resolution for each observed conflict set."""
+        if key in self._resolved_conflict_keys:
+            return False
+        self._resolved_conflict_keys.add(key)
+        self.conflicts_resolved += 1
+        return True
 
     def robot_components(self) -> List[Set[str]]:
         remaining = {n for n in self.nodes if n.startswith("Robot-")}

@@ -19,6 +19,8 @@ from .network import MessageType
 
 def network_partition(model: WarehouseModel, split: int = 2) -> Dict[str, Any]:
     """Disconnect the robot network into two communicating groups."""
+    if len(model.robots) < 2:
+        return {"error": "At least two robots are required to split the network"}
     split = max(1, min(len(model.robots) - 1, int(split)))
     ids = list(model.robots)
     groups = [ids[:split], ids[split:]]
@@ -66,11 +68,16 @@ def set_network_conditions(model: WarehouseModel, latency: int = 0, packet_loss:
 
 def restore_network(model: WarehouseModel) -> Dict[str, Any]:
     """Restore the baseline peer topology and transport conditions."""
+    was_partitioned = model.network.partition_count > 1
     model.network.restore_all()
     model.network.set_conditions(0, 0)
+    model._reconciliation_force_start = was_partitioned
     event = {"shock_type": "network_recovery", "tick": model.current_tick,
-             "status": "recovery_in_progress", "recovered": False}
+             "status": "recovery_in_progress" if was_partitioned else "recovered",
+             "recovered": not was_partitioned}
     model.log_message("EventSystem", "RobotNetwork", event)
+    if was_partitioned:
+        model.track_recovery(event)
     return event
 
 
@@ -98,6 +105,12 @@ def kill_robot(model: WarehouseModel, robot_id: int) -> Dict[str, Any]:
     # Kill the robot
     robot.status = "FAILED"
     robot.current_path = []
+    robot._charging_dock = None
+
+    if robot_id in model.charging_agent.charge_queue:
+        model.charging_agent.charge_queue.remove(robot_id)
+    if robot_id in model.charging_agent.robots_charging:
+        model.charging_agent.release_robot(robot_id)
 
     # Clear its reservations
     model.traffic_controller._clear_reservations(robot_id)

@@ -66,6 +66,14 @@ class OrderAgent(mesa.Agent):
             qty: Quantity requested.
             priority: "urgent" or "normal".
         """
+        if not isinstance(sku, str) or not sku.strip():
+            raise ValueError("sku must be a non-empty string")
+        if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
+            raise ValueError("qty must be a positive integer")
+        if priority not in ("urgent", "normal"):
+            raise ValueError("priority must be 'urgent' or 'normal'")
+        if not any(sku in shelf["skus"] for shelf in self.model.inventory_agent.shelf_state.values()):
+            raise ValueError(f"unknown SKU: {sku}")
         self.total_orders_received += 1
         priority_rank = 0 if priority == "urgent" else 1
 

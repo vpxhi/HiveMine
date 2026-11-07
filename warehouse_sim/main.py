@@ -25,10 +25,13 @@ from .events import (
     force_drain,
     flood_urgent_orders,
     inject_deadlock,
+    network_partition,
+    restore_network,
 )
 
 
-def run_simulation(ticks: int = 200, inject_shocks: bool = False) -> None:
+def run_simulation(ticks: int = 200, inject_shocks: bool = False, seed: int = 42,
+                   demo_network: bool = False) -> None:
     """
     Run the warehouse simulation for a given number of ticks.
 
@@ -39,13 +42,20 @@ def run_simulation(ticks: int = 200, inject_shocks: bool = False) -> None:
     print("=" * 60)
     print("  HIVEMINE | DECENTRALISED WAREHOUSE INTELLIGENCE")
     print("=" * 60)
-    print("Grid: 20x20 | Robots: 5 | Shelves: 10 | Docks: 2")
+    print("Grid: 20x20 | Robots: 5 | Shelves: 10 | Docks: 2 | Seed: {}".format(seed))
+    if demo_network:
+        ticks = max(ticks, 120)
+        print("Fixed network demo: normal 1–40, partitioned 41–80, recovery 81–{}".format(ticks))
     print("Running for {} ticks...".format(ticks))
     print("-" * 60)
 
-    model = WarehouseModel()
+    model = WarehouseModel(seed=seed)
 
     for tick in range(1, ticks + 1):
+        if demo_network and tick == 41:
+            network_partition(model, 2)
+        elif demo_network and tick == 81:
+            restore_network(model)
         model.step()
 
         # Inject shocks at predetermined intervals
@@ -134,8 +144,12 @@ def main() -> None:
         action="store_true",
         help="Inject environmental shocks during simulation",
     )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible runs")
+    parser.add_argument("--demo-network", action="store_true",
+                        help="Run a fixed normal/partition/recovery demonstration")
     args = parser.parse_args()
-    run_simulation(ticks=args.ticks, inject_shocks=args.shock)
+    run_simulation(ticks=args.ticks, inject_shocks=args.shock, seed=args.seed,
+                   demo_network=args.demo_network)
 
 
 if __name__ == "__main__":

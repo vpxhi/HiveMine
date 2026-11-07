@@ -14,9 +14,12 @@ PEAS Formulation:
 
 from __future__ import annotations
 
+from collections import deque
+import math
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import mesa
+from ..algorithms.astar import a_star
 from ..network import MessageType
 
 if TYPE_CHECKING:
@@ -27,7 +30,7 @@ if TYPE_CHECKING:
 BATTERY_DRAIN_PER_MOVE = 1.0
 BATTERY_DRAIN_PER_PICK = 2.0
 BATTERY_CHARGE_PER_TICK = 5.0
-BATTERY_LOW_THRESHOLD = 20.0
+BATTERY_LOW_THRESHOLD = 45.0
 PICK_TICKS = 2
 DROP_TICKS = 2
 
@@ -40,7 +43,7 @@ class RobotAgent(mesa.Agent):
         IDLE → EN_ROUTE_TO_SHELF → PICKING → EN_ROUTE_TO_PACKING →
         DROPPING → RETURNING → IDLE
 
-    The CHARGING state is reachable from any state when battery < 20%.
+    Robots begin returning to a dock with enough reserve for the planned route.
     """
 
     def __init__(
@@ -73,6 +76,8 @@ class RobotAgent(mesa.Agent):
         self.last_decision_reason = "No eligible local task is known"
         self.independent_decisions = 0
         self._last_bid_tick: Dict[int, int] = {}
+        self._processed_message_ids: set[str] = set()
+        self._processed_message_order = deque()
 
     def receive_assignment(self, task: Any) -> None:
         """Receive a task assignment from the Fleet Manager."""
@@ -94,8 +99,16 @@ class RobotAgent(mesa.Agent):
         self.nearby_agents = network.neighbors(self.robot_id)
         self.communication_status = "CONNECTED" if self.nearby_agents else "ISOLATED"
         for message in network.receive(f"Robot-{self.robot_id}"):
+            if message.message_id in self._processed_message_ids:
+                continue
+            if len(self._processed_message_order) >= 5000:
+                self._processed_message_ids.discard(self._processed_message_order.popleft())
+            self._processed_message_order.append(message.message_id)
+            self._processed_message_ids.add(message.message_id)
             payload = message.payload
             self.local_event_memory.append(message.as_dict())
+            if len(self.local_event_memory) > 500:
+                del self.local_event_memory[:-500]
             if message.message_type == MessageType.TASK_ANNOUNCEMENT:
                 task_id = int(payload["task_id"])
                 existing = self.local_task_knowledge.get(task_id)
@@ -103,6 +116,7 @@ class RobotAgent(mesa.Agent):
                     self.local_task_knowledge[task_id] = {
                         **payload, "announce_tick": self.model.current_tick,
                         "bids": {}, "claims": {}, "completed": False,
+                        "bid_exclusions": {},
                     }
                 elif existing.get("owner") is None and not existing.get("completed"):
                     existing.update(payload)
@@ -112,10 +126,16 @@ class RobotAgent(mesa.Agent):
                 self.local_task_queue = sorted(self.local_task_knowledge)
                 self._send_bid(task_id)
             elif message.message_type == MessageType.TASK_BID:
-                task_id = int(payload["task_id"])
+                try:
+                    task_id, bidder, score = int(payload["task_id"]), int(payload["robot_id"]), float(payload["score"])
+                except (KeyError, TypeError, ValueError):
+                    self.model.auction_metrics["invalid_auction_messages_rejected"] += 1
+                    continue
                 task = self.local_task_knowledge.get(task_id)
-                if task is not None:
-                    task["bids"][int(payload["robot_id"])] = float(payload["score"])
+                if task is not None and bidder in self.model.robots and math.isfinite(score):
+                    task["bids"][bidder] = score
+                else:
+                    self.model.auction_metrics["invalid_auction_messages_rejected"] += 1
             elif message.message_type == MessageType.TASK_CLAIM:
                 self._record_claim(payload)
             elif message.message_type == MessageType.TASK_COMPLETE:
@@ -125,6 +145,7 @@ class RobotAgent(mesa.Agent):
                     task["completed"] = True
                 self._stop_superseded_task(task_id)
             elif message.message_type == MessageType.STATE_SYNC:
+                network.state_sync_received += 1
                 self._merge_state(payload)
             elif message.message_type == MessageType.TASK_ABANDON:
                 task = self.local_task_knowledge.get(int(payload["task_id"]))
@@ -159,13 +180,26 @@ class RobotAgent(mesa.Agent):
         x, y = task["shelf_location"]
         distance = abs(self.pos_tuple[0] - x) + abs(self.pos_tuple[1] - y)
         urgency = -4.0 if task.get("priority") == "urgent" else 0.0
-        workload = 12.0 if self.current_task is not None else 0.0
-        return round(distance + (100.0 - self.battery) * 0.12 + workload + urgency, 6)
+        return round(distance + (100.0 - self.battery) * 0.12 + urgency, 6)
 
     def _send_bid(self, task_id: int) -> None:
         task = self.local_task_knowledge[task_id]
-        if self.status != "IDLE" or self.battery < 25 or task.get("completed"):
+        reason = None
+        if task.get("completed") or task_id in self.model.completed_task_ids:
+            reason = "task already completed"
+        elif self.status != "IDLE":
+            reason = f"robot is {self.status.lower().replace('_', ' ')}"
+        elif self.battery < 25:
+            reason = "battery below 25% bidding threshold"
+        if reason:
+            exclusions = task.setdefault("bid_exclusions", {})
+            if exclusions.get(self.robot_id) != reason:
+                exclusions[self.robot_id] = reason
+                self.model.log_message(f"Robot-{self.robot_id}", "Auction", {
+                    "action": "auction_bid_excluded", "task_id": task_id,
+                    "robot_id": self.robot_id, "reason": reason})
             return
+        task.setdefault("bid_exclusions", {}).pop(self.robot_id, None)
         score = self._bid_score(task)
         task["bids"][self.robot_id] = score
         self.model.network.broadcast(f"Robot-{self.robot_id}", MessageType.TASK_BID,
@@ -173,39 +207,84 @@ class RobotAgent(mesa.Agent):
                                       "score": score, "battery": self.battery,
                                       "pos": list(self.pos_tuple)}, self.model.current_tick)
         self._last_bid_tick[task_id] = self.model.current_tick
+        bid_key = (task_id, self.robot_id)
+        if bid_key not in self.model._counted_bids:
+            self.model._counted_bids.add(bid_key)
+            self.model.auction_metrics["bids_submitted"] += 1
+        self.model.log_message(f"Robot-{self.robot_id}", "Auction", {
+            "action": "auction_bid_calculated", "task_id": task_id,
+            "robot_id": self.robot_id, "score": score,
+            "cost": "Manhattan distance + 0.12 × battery used - 4 for urgent work"})
         self.last_decision = f"Bid on task {task_id}"
         self.last_decision_reason = f"Local bid score {score:.2f}; lower is better"
 
+    def _prune_expired_claims(self, task: Dict[str, Any]) -> None:
+        expiries = task.setdefault("claim_expiry", {})
+        claims = task.setdefault("claims", {})
+        for rid in claims:
+            expiries.setdefault(rid, self.model.current_tick + 30)
+        expired = [rid for rid in claims if int(expiries.get(rid, 0)) <= self.model.current_tick]
+        for rid in expired:
+            claims.pop(rid, None)
+            expiries.pop(rid, None)
+        owner = task.get("owner")
+        if owner is not None and owner not in claims:
+            task.pop("owner", None)
+
     def _record_claim(self, payload: Dict[str, Any]) -> None:
-        task_id, owner = int(payload["task_id"]), int(payload["robot_id"])
+        try:
+            task_id, owner = int(payload["task_id"]), int(payload["robot_id"])
+            score = float(payload["score"])
+        except (KeyError, TypeError, ValueError):
+            self.model.auction_metrics["invalid_auction_messages_rejected"] += 1
+            return
+        if owner not in self.model.robots or not math.isfinite(score):
+            self.model.auction_metrics["invalid_auction_messages_rejected"] += 1
+            return
         task = self.local_task_knowledge.get(task_id)
         if task is None:
+            return
+        if task_id in self.model.completed_task_ids:
+            task["completed"] = True
             return
         claims = task["claims"]
         if task.get("completed"):
             return
-        claims[owner] = float(payload["score"])
-        task.setdefault("claim_expiry", {})[owner] = int(payload.get("lease_until", self.model.current_tick + 30))
+        self._prune_expired_claims(task)
+        claims = task["claims"]
+        try:
+            lease_until = int(payload.get("lease_until", self.model.current_tick + 30))
+        except (TypeError, ValueError):
+            self.model.auction_metrics["invalid_auction_messages_rejected"] += 1
+            return
+        claims[owner] = score
+        task.setdefault("claim_expiry", {})[owner] = lease_until
+        world_task = next((item for item in self.model.order_agent.all_tasks if item.task_id == task_id), None)
+        if world_task is not None and world_task.status != "COMPLETED":
+            world_task.status = "IN_PROGRESS"
+            world_task.assigned_robot = owner
         if len(claims) > 1:
-            self.model.network.conflicts_detected += 1
+            conflict_key, is_new = self.model.network.record_claim_conflict(task_id, claims)
             winner = min(claims, key=lambda rid: (claims[rid], rid))
             task["owner"] = winner
-            if winner != self.robot_id and getattr(self.current_task, "task_id", None) == task_id and self.status == "EN_ROUTE_TO_SHELF":
-                self.model.inventory_agent.release(self.current_task.shelf_location, self.robot_id)
-                self.current_task = None
-                self.status = "IDLE"
-                self.current_path = []
-                self.model.traffic_controller._clear_reservations(self.robot_id)
+            if world_task is not None and world_task.status != "COMPLETED":
+                world_task.assigned_robot = winner
+            if winner != self.robot_id and getattr(self.current_task, "task_id", None) == task_id:
+                self._stop_superseded_task(task_id)
+                self.model.network.duplicate_claims_prevented += 1
                 self.model.network.broadcast(f"Robot-{self.robot_id}", MessageType.TASK_ABANDON,
                                              {"task_id": task_id, "robot_id": self.robot_id}, self.model.current_tick)
-            self.model.log_message("RobotNetwork", "RobotNetwork", {
-                "action": "duplicate_claim_detected", "task_id": task_id,
-                "claims": sorted(claims), "deterministic_winner": winner})
+            if self.model.network.record_claim_resolution(conflict_key) and is_new:
+                self.model.log_message("RobotNetwork", "RobotNetwork", {
+                    "action": "task_conflict_reconciled", "task_id": task_id,
+                    "claims": {str(rid): value for rid, value in sorted(claims.items())},
+                    "rule": "lowest bid score, then lowest robot ID", "winner": winner})
 
     def _abandon_local_task(self, task_id: int) -> None:
         task = self.local_task_knowledge.get(task_id)
         world_task = next((t for t in self.model.order_agent.all_tasks if t.task_id == task_id), None)
-        if world_task is not None and world_task.status != "COMPLETED":
+        if (world_task is not None and world_task.status != "COMPLETED"
+                and world_task.assigned_robot in (-1, self.robot_id)):
             world_task.status = "PENDING"
             world_task.assigned_robot = -1
         if task is not None:
@@ -244,7 +323,8 @@ class RobotAgent(mesa.Agent):
             tid = int(item["task_id"])
             existing = self.local_task_knowledge.get(tid)
             if existing is None:
-                existing = {**item["task"], "bids": {}, "claims": {}, "announce_tick": self.model.current_tick}
+                existing = {**item["task"], "bids": {}, "claims": {}, "announce_tick": self.model.current_tick,
+                            "bid_exclusions": {}}
                 self.local_task_knowledge[tid] = existing
                 changes += 1
             existing["bids"].update({int(k): float(v) for k, v in item.get("bids", {}).items()})
@@ -259,17 +339,26 @@ class RobotAgent(mesa.Agent):
                 existing["claims"].update({int(k): float(v) for k, v in item.get("claims", {}).items()})
                 for owner in existing["claims"]:
                     existing["claim_expiry"].setdefault(owner, self.model.current_tick + 30)
+                self._prune_expired_claims(existing)
                 if len(existing["claims"]) > before:
                     changes += 1
             if len(existing["claims"]) > 1:
-                self.model.network.conflicts_detected += 1
+                conflict_key, is_new = self.model.network.record_claim_conflict(tid, existing["claims"])
+                previous_owner = existing.get("owner")
                 existing["owner"] = min(existing["claims"], key=lambda rid: (existing["claims"][rid], rid))
-                changes += 1
-                self.model.network.conflicts_detected += 1
-                self.model.log_message(f"Robot-{self.robot_id}", "RobotNetwork", {
-                    "action": "task_conflict_reconciled", "task_id": tid,
-                    "claims": sorted(existing["claims"]), "winner": existing["owner"]})
-                if existing["owner"] != self.robot_id:
+                world_task = next((task for task in self.model.order_agent.all_tasks if task.task_id == tid), None)
+                if world_task is not None and world_task.status != "COMPLETED":
+                    world_task.status = "IN_PROGRESS"
+                    world_task.assigned_robot = existing["owner"]
+                if existing["owner"] != previous_owner:
+                    changes += 1
+                if self.model.network.record_claim_resolution(conflict_key) and is_new:
+                    self.model.log_message(f"Robot-{self.robot_id}", "RobotNetwork", {
+                        "action": "task_conflict_reconciled", "task_id": tid,
+                        "claims": {str(rid): value for rid, value in sorted(existing["claims"].items())},
+                        "rule": "lowest bid score, then lowest robot ID", "winner": existing["owner"]})
+                if existing["owner"] != self.robot_id and getattr(self.current_task, "task_id", None) == tid:
+                    self.model.network.duplicate_claims_prevented += 1
                     self._stop_superseded_task(tid)
         if changes:
             self.model.network.reconciliation_count += 1
@@ -279,11 +368,22 @@ class RobotAgent(mesa.Agent):
 
     def decide(self) -> None:
         """Decide what action to take based on current state."""
-        # Check for low battery (unless already charging)
+        # Keep enough energy to reach the closest dock, including a small
+        # reserve for detours caused by blocked aisles.
+        dock_routes = [
+            a_star(self.model.grid_width, self.model.grid_height, self.pos_tuple,
+                   dock, self.model.blocked_cells)
+            for dock in self.model.charging_docks
+        ]
+        reachable_lengths = [len(path) - 1 for path in dock_routes if path]
+        safe_charge_threshold = (
+            max(BATTERY_LOW_THRESHOLD, min(reachable_lengths) + 5.0)
+            if reachable_lengths else BATTERY_LOW_THRESHOLD
+        )
         if (
-            self.battery < BATTERY_LOW_THRESHOLD
-            and self.status != "CHARGING"
-            and self.status != "FAILED"
+            self.battery <= safe_charge_threshold
+            and self.status not in ("CHARGING", "EN_ROUTE_TO_CHARGE", "WAITING_FOR_CHARGE",
+                                    "NEEDS_CHARGE", "FAILED")
         ):
             self._pre_charge_status = self.status
             self._pre_charge_task = self.current_task
@@ -293,6 +393,7 @@ class RobotAgent(mesa.Agent):
         if self.status == "IDLE":
             for task_id in self.local_task_queue:
                 task = self.local_task_knowledge[task_id]
+                self._prune_expired_claims(task)
                 owner = task.get("owner")
                 expiry = task.get("claim_expiry", {}).get(owner, 0) if owner is not None else 0
                 if owner is not None and expiry < self.model.current_tick and (owner != self.robot_id or self.current_task is None):
@@ -313,6 +414,9 @@ class RobotAgent(mesa.Agent):
 
     def _accept_local_task(self, task_id: int, task_data: Dict[str, Any]) -> None:
         from .order_agent import Task
+        if task_id in self.model.completed_task_ids or task_data.get("completed"):
+            task_data["completed"] = True
+            return
         task = Task(int(task_data.get("priority_rank", 1)), int(task_data.get("arrival_tick", 0)),
                     task_id, str(task_data["sku"]), int(task_data["qty"]),
                     str(task_data["priority"]), "IN_PROGRESS", self.robot_id,
@@ -333,6 +437,11 @@ class RobotAgent(mesa.Agent):
                                      {"task_id": task_id, "robot_id": self.robot_id,
                                       "score": task_data["claims"][self.robot_id], "lease_until": self.model.current_tick + 30},
                                      self.model.current_tick)
+        self.model.auction_metrics["successful_allocations"] += 1
+        world_task = next((item for item in self.model.order_agent.all_tasks if item.task_id == task_id), None)
+        if world_task is not None and world_task.status != "COMPLETED":
+            world_task.status = "IN_PROGRESS"
+            world_task.assigned_robot = self.robot_id
         path = self.model.traffic_controller.request_route(self.robot_id, self.pos_tuple, task.shelf_location)
         if path:
             self.update_path(path)
@@ -343,7 +452,9 @@ class RobotAgent(mesa.Agent):
             task_data["decision"] = self.last_decision_reason
             self.model.log_message(f"Robot-{self.robot_id}", "RobotNetwork", {
                 "action": "distributed_task_claim", "task_id": task_id,
-                "bid": task_data["claims"][self.robot_id], "known_bids": len(task_data["bids"])})
+                "robot_id": self.robot_id, "bid": task_data["claims"][self.robot_id],
+                "bids": {str(rid): score for rid, score in sorted(task_data["bids"].items())},
+                "known_bids": len(task_data["bids"])})
         else:
             self.model.inventory_agent.release(task.shelf_location, self.robot_id)
             self.current_task = None
@@ -359,6 +470,9 @@ class RobotAgent(mesa.Agent):
             self._initiate_charging()
             return
 
+        if self.status == "WAITING_FOR_CHARGE":
+            return
+
         if self.status == "CHARGING":
             self._charge_tick()
             return
@@ -366,7 +480,7 @@ class RobotAgent(mesa.Agent):
         if self.status == "IDLE":
             return
 
-        if self.status in ("EN_ROUTE_TO_SHELF", "EN_ROUTE_TO_PACKING", "RETURNING"):
+        if self.status in ("EN_ROUTE_TO_SHELF", "EN_ROUTE_TO_PACKING", "EN_ROUTE_TO_CHARGE", "RETURNING"):
             self._follow_path()
             return
 
@@ -389,17 +503,18 @@ class RobotAgent(mesa.Agent):
 
         # Check if next cell is occupied by another robot
         # Allow sharing at packing station and charging docks (work areas)
-        is_shared_area = (
-            next_pos == self.model.packing_station
-            or next_pos in self.model.charging_docks
-            or self.path_index >= len(self.current_path) - 1  # destination
-        )
+        inside_grid = 0 <= next_pos[0] < self.model.grid_width and 0 <= next_pos[1] < self.model.grid_height
+        is_shared_area = next_pos == self.model.packing_station
 
+        if not inside_grid or next_pos in self.model.blocked_cells:
+            self.path_index -= 1
+            self.model.traffic_controller.blocked_moves += 1
+            return
         if not is_shared_area:
             occupants = self.model.get_robots_at(next_pos)
             if any(r.robot_id != self.robot_id for r in occupants):
-                # Wait in place
                 self.path_index -= 1
+                self.model.traffic_controller.blocked_moves += 1
                 return
 
         self.pos_tuple = next_pos
@@ -419,6 +534,10 @@ class RobotAgent(mesa.Agent):
             self._action_timer = DROP_TICKS
         elif self.status == "RETURNING":
             self.status = "IDLE"
+            self.current_path = []
+            self.path_index = 0
+        elif self.status == "EN_ROUTE_TO_CHARGE":
+            self.status = "CHARGING"
             self.current_path = []
             self.path_index = 0
 
@@ -482,9 +601,6 @@ class RobotAgent(mesa.Agent):
 
     def _initiate_charging(self) -> None:
         """Request a charging dock from the Charging Agent."""
-        self.model.charging_agent.request_charge(self.robot_id, self.pos_tuple)
-        self.status = "CHARGING"
-
         # If we had an in-progress task, hand it off
         if self.current_task and self._pre_charge_status in (
             "EN_ROUTE_TO_SHELF",
@@ -500,6 +616,16 @@ class RobotAgent(mesa.Agent):
             self._abandon_local_task(task_id)
             self.current_task = None
 
+        dock = self.model.charging_agent.request_charge(self.robot_id, self.pos_tuple)
+        if dock is None:
+            self.status = "WAITING_FOR_CHARGE"
+            self.current_path = []
+            self.path_index = 0
+        elif self.pos_tuple == dock:
+            self.status = "CHARGING"
+        else:
+            self.status = "EN_ROUTE_TO_CHARGE"
+
         self.model.log_message(
             from_agent=f"Robot-{self.robot_id}",
             to_agent="ChargingAgent",
@@ -512,11 +638,15 @@ class RobotAgent(mesa.Agent):
 
     def _charge_tick(self) -> None:
         """Process one tick of charging."""
+        if self._charging_dock is None or self.pos_tuple != self._charging_dock:
+            self.status = "EN_ROUTE_TO_CHARGE" if self._charging_dock is not None else "WAITING_FOR_CHARGE"
+            return
         self.battery = min(100.0, self.battery + BATTERY_CHARGE_PER_TICK)
 
         if self.battery >= 95.0:
             # Fully charged — release dock and resume
             self.model.charging_agent.release_robot(self.robot_id)
+            self._charging_dock = None
             self.status = "IDLE"
             self.current_path = []
             self.path_index = 0

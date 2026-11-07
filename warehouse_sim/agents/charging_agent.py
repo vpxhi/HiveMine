@@ -30,9 +30,9 @@ class ChargingAgent(mesa.Agent):
     """
     Manages charging dock allocation and robot charging queues.
 
-    When a robot's battery falls below 20%, it requests a dock. If all
-    docks are occupied, the robot is queued and flagged in the dashboard
-    as "waiting to charge."
+When a robot requests a dock, the nearest reachable free dock is reserved.
+If all docks are occupied, the robot is queued and flagged in the dashboard
+as "waiting to charge."
     """
 
     def __init__(
@@ -65,49 +65,37 @@ class ChargingAgent(mesa.Agent):
         Returns:
             The dock location if assigned, None if queued.
         """
-        # Find the nearest free dock
+        if robot_id not in self.model.robots or self.model.robots[robot_id].status == "FAILED":
+            return None
+        if robot_id in self.robots_charging:
+            return self.robots_charging[robot_id]
+
+        # Find a reachable free dock before reserving it.
         free_docks = [
             loc for loc, occupant in self.dock_occupancy.items()
             if occupant is None
+            and all(robot.robot_id == robot_id for robot in self.model.get_robots_at(loc))
         ]
 
-        if free_docks:
-            # Sort by distance and assign nearest
-            nearest = min(free_docks, key=lambda d: manhattan_distance(robot_pos, d))
+        for nearest in sorted(free_docks, key=lambda d: manhattan_distance(robot_pos, d)):
+            path = self.model.traffic_controller.request_route(robot_id, robot_pos, nearest)
+            if not path:
+                continue
             self.dock_occupancy[nearest] = robot_id
             self.robots_charging[robot_id] = nearest
-
-            # Route the robot to the dock
-            path = self.model.traffic_controller.request_route(
-                robot_id, robot_pos, nearest
-            )
             robot = self.model.get_robot_by_id(robot_id)
-            if robot and path:
+            if robot:
+                robot._charging_dock = nearest
                 robot.update_path(path)
-
-            self.model.log_message(
-                from_agent="ChargingAgent",
-                to_agent=f"Robot-{robot_id}",
-                payload={
-                    "action": "dock_assigned",
-                    "dock_location": nearest,
-                },
-            )
+                robot.status = "CHARGING" if robot.pos_tuple == nearest else "EN_ROUTE_TO_CHARGE"
+            self.model.log_message("ChargingAgent", f"Robot-{robot_id}", {
+                "action": "dock_assigned", "dock_location": nearest})
             return nearest
-        else:
-            # All docks full — queue the robot
-            if robot_id not in self.charge_queue:
-                self.charge_queue.append(robot_id)
-
-            self.model.log_message(
-                from_agent="ChargingAgent",
-                to_agent=f"Robot-{robot_id}",
-                payload={
-                    "action": "queued_for_charge",
-                    "queue_position": len(self.charge_queue),
-                },
-            )
-            return None
+        if robot_id not in self.charge_queue:
+            self.charge_queue.append(robot_id)
+        self.model.log_message("ChargingAgent", f"Robot-{robot_id}", {
+            "action": "queued_for_charge", "queue_position": len(self.charge_queue)})
+        return None
 
     def release_robot(self, robot_id: int) -> None:
         """
@@ -133,11 +121,12 @@ class ChargingAgent(mesa.Agent):
             )
 
             # Assign dock to next queued robot
-            if self.charge_queue:
+            while self.charge_queue:
                 next_robot_id = self.charge_queue.pop(0)
                 next_robot = self.model.get_robot_by_id(next_robot_id)
-                if next_robot:
+                if next_robot and next_robot.status != "FAILED":
                     self.request_charge(next_robot_id, next_robot.pos_tuple)
+                    break
 
     def sense(self) -> None:
         """Monitor fleet battery levels for critical robots."""
@@ -159,12 +148,23 @@ class ChargingAgent(mesa.Agent):
         """Proactively redirect critical-battery robots to charge."""
         for rid in self._critical_robots:
             robot = self.model.get_robot_by_id(rid)
-            if robot and robot.status not in ("CHARGING", "NEEDS_CHARGE", "FAILED"):
+            if robot and robot.status not in (
+                "CHARGING", "EN_ROUTE_TO_CHARGE", "WAITING_FOR_CHARGE", "NEEDS_CHARGE", "FAILED"
+            ):
                 robot.status = "NEEDS_CHARGE"
+        physically_available = any(
+            owner is None and not self.model.get_robots_at(loc)
+            for loc, owner in self.dock_occupancy.items()
+        )
+        if self.charge_queue and physically_available:
+            next_robot_id = self.charge_queue.pop(0)
+            next_robot = self.model.get_robot_by_id(next_robot_id)
+            if next_robot and next_robot.status != "FAILED":
+                self.request_charge(next_robot_id, next_robot.pos_tuple)
 
     def get_charging_count(self) -> int:
         """Return number of robots currently charging."""
-        return len(self.robots_charging)
+        return sum(1 for robot in self.model.robots.values() if robot.status == "CHARGING")
 
     def get_queue_length(self) -> int:
         """Return number of robots waiting for a dock."""

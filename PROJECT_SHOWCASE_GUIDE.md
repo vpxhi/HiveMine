@@ -10,7 +10,7 @@ The project is deliberately explicit about its boundary: agents and communicatio
 
 1. **Home:** point out the miniature 3D warehouse, moving robots, routes and the short activity feed. Press **Start Simulation**.
 2. **Explore:** select a robot. Explain its current job, destination and battery; open Technical details only if a judge asks how bids or messages work.
-3. **Guided walkthrough:** press **Show me how HiveMine works**. Advance through the real task-negotiation and network-failure stages. Use the 20-tick continuation during independent operation to show actual progress.
+3. **Guided walkthrough:** press **Show me how HiveMine works**. Advance through normal operation, bidding, network failure, independent work, observed conflicts, recovery and measured results. Use the 20-tick continuation during independent operation to show actual progress.
 4. **Experiment:** press **Simulate Network Failure**. The 3D peer links break into two groups while the physical robot routes continue.
 5. **Independent operation:** let the simulation run. The activity feed describes local choices; Experiment reports real delivery counts and independent decisions during the outage.
 6. **Recovery:** press **Restore Communication**. Keep the simulation running for several ticks so the robots exchange and reconcile their local histories.
@@ -41,7 +41,7 @@ The initial graph connects five robots in a line; Order Agent connects to Robot 
 The task auction is **inspired by CBAA**, not a complete CBBA implementation:
 
 1. Order Agent publishes the task ID, shelf, quantity and urgency.
-2. Each eligible robot locally scores distance, battery, urgency and current workload.
+2. Each eligible robot calculates `Manhattan distance + 0.12 × (100 − battery %) − 4 for urgent work`.
 3. Robots broadcast bids to reachable peers.
 4. After a one-tick collection window, each robot that has received bids selects the minimum score, with robot ID as the stable tie-break.
 5. The winner broadcasts a claim with a lease horizon and executes the task.
@@ -51,7 +51,7 @@ The method is a single-task auction. It does not optimize CBBA bundles or guaran
 
 ## Recovery semantics
 
-Fault injection and fault recovery are separate. Event injection marks an event as `injected` or `recovery_in_progress`; it does not increment `shocks_recovered`. A recovery is counted only after the model observes the associated condition, such as a safe reroute, completed charging, a pending reassignment or a reconciled partition. Network state synchronization is visible through `state_reconciled` and `reconnection_reconciliation_started` messages.
+Fault injection and fault recovery are separate. Event injection marks an event as `injected` or `recovery_in_progress`; it does not increment `shocks_recovered`. A network recovery is counted only after the active robots process their state-sync messages. The UI displays conflict winners, received bids and reconciliation duration from the event log and simulation counters.
 
 During a partition, each robot continues its current state machine and may claim tasks from its local view. Perfect consistency is not promised. Task IDs are unique, completion is idempotent, and stock updates occur only once. Duplicate claims and unresolved work are visible so the audience can discuss the tradeoff between availability and global agreement.
 
@@ -63,11 +63,11 @@ During a partition, each robot continues its current state machine and may claim
 | Explore | Inspect each robot's activity and optional local state/message details |
 | Experiment | Apply communication failures, restore links, try other warehouse disruptions, and inspect measured outcomes |
 
-The scene uses Plotly 3D meshes and coordinates from `WarehouseModel.get_grid_state()`. Routes, destinations, robot positions and network edges are model state. Camera rotation, zoom, pan and top-down/angled views are interactive; camera reset is available from the Plotly toolbar.
+The scene uses Plotly 3D meshes and coordinates from `WarehouseModel.get_grid_state()`. Routes, destinations, task states, robot positions and network edges are model state. Routes, network links and task markers have independent toggles. Camera rotation, zoom, pan and top-down/angled views are interactive; camera reset is available from the Plotly toolbar.
 
 ## Measures available
 
-Operational counters include completed and pending tasks, battery, utilization, collision count, deadlocks and verified recovery count. Network counters include messages sent/delivered/dropped/delayed, active links, disconnected robots, components and disconnected ticks. Resilience counters include completed work during partitions, independent decisions, detected claim conflicts and reconciliation activity. These values are read from simulation events and state; the showcase should report the observed run rather than prewritten demo totals.
+Operational counters include created, completed and remaining tasks, time-weighted active-robot utilization, average completion time when available, battery, collision count, deadlocks and verified recovery count. Network counters include messages sent/delivered/dropped, observed average delivery delay, active links, disconnected robots, components and disconnected ticks. Coordination counters include auctions, submitted bids, allocations, detected/resolved conflicts and prevented duplicate claims. Reconnection sync duration is shown only after all active robot pairs process their state-sync messages. These values come from simulation events and state; unavailable averages display as unavailable instead of zero.
 
 ## Install, run and verify
 
@@ -82,8 +82,11 @@ CLI and tests:
 
 ```powershell
 python -m warehouse_sim.main --ticks 200 --shock
+python -m warehouse_sim.main --demo-network --seed 42
 python -m pytest -q
 ```
+
+Use `python -m warehouse_sim.main --demo-network --seed 42` for the same seeded normal, partition, and recovery timeline.
 
 ## Technical limits to explain honestly
 

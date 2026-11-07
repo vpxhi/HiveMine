@@ -8,7 +8,7 @@ The central demonstration is operational: run normal work, partition the robot n
 
 ## Quick start
 
-Windows PowerShell:
+Python 3.10+ · Windows PowerShell:
 
 ```powershell
 python -m venv .venv
@@ -22,6 +22,7 @@ Open http://localhost:8501. To run the command-line simulation:
 ```powershell
 python -m warehouse_sim.main --ticks 200
 python -m warehouse_sim.main --ticks 200 --shock
+python -m warehouse_sim.main --demo-network --seed 42
 ```
 
 Run the test suite:
@@ -53,7 +54,7 @@ The Order Agent prioritizes orders, resolves SKU locations through Inventory, an
 
 ## Decentralised allocation
 
-HiveMine implements a **consensus-inspired, single-task peer auction**. Eligible robots independently score an offer using Manhattan distance, remaining battery, local workload and urgency. Robots broadcast bids to reachable peers. After a one-tick bid window, each robot that has received bids selects the lowest score, with robot ID as a deterministic tie-break, and broadcasts a leased claim.
+HiveMine implements a **CBAA-inspired, single-task peer auction**. An eligible idle robot scores a task using `Manhattan distance + 0.12 × (100 − battery %) − 4 for urgent work`. Robots broadcast bids to currently reachable peers. After the one-tick collection window, a robot that has received bids selects the lowest score, with robot ID as a deterministic tie-break, and broadcasts a leased claim. Busy, charging, failed, or low-battery robots do not bid; their local reason is available in the auction details.
 
 This is CBAA-style task bidding, not full CBBA: robots do not build and optimize multi-task bundles, and there is no formal convergence guarantee under arbitrary loss or long partitions. A partition can produce conflicting claims because independent groups cannot observe one another. HiveMine records these conflicts and applies a deterministic score/robot-ID rule when claims meet again.
 
@@ -76,9 +77,9 @@ HiveMine now opens to a simple three-area product experience:
 - **Explore** — choose one of the five robots to inspect its real task, route, battery, destination and reason for choosing work. Its local messages and task knowledge are tucked into **Technical details**.
 - **Experiment** — simulate a network failure, split or isolate robots, disconnect everyone, add delay or packet loss, then restore communication. The 3D links, group membership and progress figures come from the live simulator.
 
-The 3D scene shows actual robot positions, planned paths, destinations, shelf racks, packing and charging stations, obstacles and active/broken peer links. Drag to rotate, scroll to zoom, right-drag to pan, use the camera toggle for a top-down view, or reset the camera from Plotly's toolbar. Robot movement and activity updates follow actual model ticks; the frontend does not animate fake results.
+The 3D scene shows actual robot positions, planned paths, destinations, delivery task states, shelf racks, packing and charging stations, obstacles and active/broken peer links. Toggle routes, network links and tasks independently. Drag to rotate, scroll to zoom, right-drag to pan, use the camera toggle for a top-down view, or reset the camera from Plotly's toolbar. Robot movement and activity updates follow actual model ticks; Plotly transitions smooth the displayed position changes.
 
-Use **Show me how HiveMine works** for a six-stage, real-simulation walkthrough. The final Experiment settings panel retains the warehouse shocks, observed throughput comparison and JSON/CSV run exports.
+Use **Show me how HiveMine works** for a seven-stage, real-simulation walkthrough, including any observed claim conflict. The Experiment area includes seeded comparison scenarios, warehouse shocks and JSON/CSV run exports.
 
 ## Architecture
 
@@ -107,16 +108,16 @@ flowchart TB
   M --> D[Streamlit digital twin]
 ```
 
-The graph in the Network Lab displays robot links; the Order Agent link is a task-source link into Robot 0. The shared traffic safety service still centralizes route reservations and CBS conflict handling so the existing collision-avoidance behavior remains intact. This is a deliberate limitation of the hackathon prototype: task assignment is peer-negotiated, while shared physical safety and inventory accounting remain environmental services.
+The 3D network layer displays robot links; the Order Agent link is a task-source link into Robot 0. The shared traffic safety service still centralizes route reservations and CBS conflict handling. This is a deliberate limitation of the hackathon prototype: task assignment is peer-negotiated, while shared physical safety and inventory accounting remain environmental services.
 
 ## Algorithms and safeguards
 
 - A-star for four-directional warehouse routes.
 - Conflict-Based Search (CBS) for multi-robot path conflicts and reservations.
-- Local distance/battery/workload/urgency bidding with deterministic tie-break.
+- Local distance/battery/urgency bidding with deterministic tie-break.
 - Wait-for graph deadlock detection and yielding.
 - Finite-state robot control, battery-aware charging and idempotent task completion.
-- Seeded message loss and simulation randomness for reproducible scenarios.
+- Seeded message loss and simulation randomness for reproducible scenarios (`--seed`, default 42).
 
 ## Limitations
 
@@ -125,6 +126,7 @@ The graph in the Network Lab displays robot links; the Order Agent link is a tas
 - A task offer is sourced by the Order Agent through Robot 0. A group cut off from that source can complete known work but may not learn new offers until a state exchange reconnects it.
 - Traffic reservation/CBS and inventory truth remain shared safety/environment services.
 - Reconciliation is deterministic for received claims; concurrent physical execution may already have progressed before a conflict becomes visible.
+- Reconnection is counted as recovered only after the active robots have processed the expected state-sync messages. The measured duration covers that in-process sync exchange, not convergence under every possible asynchronous network.
 - Grid movement simplifies acceleration, sensors, turning, payloads, workers and physical safety.
 
 ## Project layout

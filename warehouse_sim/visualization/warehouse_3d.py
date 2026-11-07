@@ -13,6 +13,8 @@ PALETTE = {
     "amber": "#F0BD68",
     "red": "#EF7884",
     "purple": "#B5A0FF",
+    "teal": "#63CEC4",
+    "pink": "#E99BC7",
     "muted": "#738096",
     "floor": "#1B2330",
     "line": "#354153",
@@ -57,7 +59,9 @@ def _line_trace(fig: go.Figure, points: List[Tuple[float, float, float]], color:
                                hoverinfo="skip", showlegend=False))
 
 
-def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = False) -> go.Figure:
+def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = False,
+                          show_network: bool = True, show_routes: bool = True,
+                          show_tasks: bool = True) -> go.Figure:
     """Build a navigable 3D scene from current robot, route and network state."""
     state = model.get_grid_state()
     network = model.network
@@ -104,28 +108,54 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
     active_edges = {frozenset((int(a.split("-")[1]), int(b.split("-")[1])))
                     for a, b in ((a, b) for a, peers in network.adjacency.items()
                                  for b in peers if a.startswith("Robot-") and b.startswith("Robot-") and a < b)}
-    for rid in range(len(robot_positions) - 1):
-        edge = frozenset((rid, rid + 1))
-        a = robot_positions[rid]; b = robot_positions[rid + 1]
-        if edge in active_edges:
-            _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)], "#78C6B5", 3, name="Robots connected")
-        elif network.partition_count > 1:
-            _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)], PALETTE["red"], 2, "dash", "Connection interrupted")
+    if show_network:
+        for rid in range(len(robot_positions) - 1):
+            edge = frozenset((rid, rid + 1))
+            a = robot_positions[rid]; b = robot_positions[rid + 1]
+            if edge in active_edges:
+                _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)], "#78C6B5", 3, name="Robots connected")
+            elif network.partition_count > 1:
+                _line_trace(fig, [(a[0], a[1], 1.35), (b[0], b[1], 1.35)], PALETTE["red"], 2, "dash", "Connection interrupted")
 
-    group_colors = [PALETTE["blue"], PALETTE["purple"], PALETTE["amber"], "#DB9BEA", "#7DD4D0"]
+    robot_colors = [PALETTE["blue"], PALETTE["purple"], PALETTE["teal"], PALETTE["amber"], PALETTE["pink"]]
+    task_styles = {
+        "PENDING": (PALETTE["amber"], "circle", "Waiting for a robot"),
+        "DISPATCHED": (PALETTE["blue"], "diamond", "Offer sent to robots"),
+        "IN_PROGRESS": (PALETTE["green"], "diamond", "Robot working on this delivery"),
+        "COMPLETED": (PALETTE["muted"], "circle", "Delivery completed"),
+    }
+    active_tasks = [task for task in state.get("tasks", [])
+                    if not task["completed"] and tuple(task["shelf_location"]) in state["shelf_locations"]]
+    recent_completed = [task for task in state.get("tasks", [])
+                        if task["completed"] and tuple(task["shelf_location"]) in state["shelf_locations"]][-5:]
+    visible_tasks = active_tasks[-20:] + recent_completed
+    for task in visible_tasks if show_tasks else []:
+        color, symbol, description = task_styles.get(task["status"], (PALETTE["muted"], "circle", task["status"].title()))
+        if task["completed"]:
+            color, symbol, description = task_styles["COMPLETED"]
+        tx, ty = task["shelf_location"]
+        fig.add_trace(go.Scatter3d(
+            x=[tx], y=[ty], z=[1.72], mode="markers",
+            marker={"size": 8 if task["completed"] else 11, "symbol": symbol, "color": color,
+                    "line": {"color": "#111722", "width": 1}},
+            name=f"Delivery {task['task_id']}",
+            hovertemplate=f"Delivery {task['task_id']} · {description}<extra></extra>",
+            showlegend=False))
+
     for rid, robot in state["robots"].items():
         x, y = robot["pos"]
         group = sorted(network.connected_robot_ids(rid))
         group_index = min(group) if group else rid
-        color = group_colors[group_index % len(group_colors)] if network.partition_count > 1 else PALETTE["blue"]
+        color = robot_colors[rid % len(robot_colors)]
         if robot["status"] == "FAILED": color = PALETTE["red"]
-        elif robot["status"] in ("CHARGING", "NEEDS_CHARGE"): color = PALETTE["amber"]
+        elif robot["status"] in ("CHARGING", "NEEDS_CHARGE", "EN_ROUTE_TO_CHARGE", "WAITING_FOR_CHARGE"): color = PALETTE["amber"]
         elif robot["status"] in ("PICKING", "DROPPING"): color = PALETTE["green"]
         _box(fig, (x, y, 0.4), (0.78, 0.62, 0.4), color, f"Robot {rid+1:02d}",
              f"Robot {rid+1:02d} · {robot['status'].replace('_', ' ').title()} · Battery {robot['battery']:.0f}%")
-        fig.add_trace(go.Scatter3d(x=[x], y=[y], z=[0.68], mode="text", text=[f"R{rid+1:02d}"],
-                                   textfont={"size": 12, "color": "#F4F6FA"}, hoverinfo="skip", showlegend=False))
-        path = robot["path"]
+        status_label = "Offline" if robot["status"] == "FAILED" else "Isolated" if robot["communication"] == "ISOLATED" else robot["status"].replace("_", " ").title()
+        fig.add_trace(go.Scatter3d(x=[x], y=[y], z=[0.68], mode="text", text=[f"R{rid+1:02d} · {status_label}"],
+                                   textfont={"size": 9, "color": "#F4F6FA"}, hoverinfo="skip", showlegend=False))
+        path = robot["path"] if show_routes else []
         if path:
             _line_trace(fig, [(p[0], p[1], 0.16) for p in path], color, 4,
                         "dash" if robot["communication"] == "ISOLATED" else "solid", f"Robot {rid+1:02d} route")
@@ -135,7 +165,7 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
                                       anchor="tail", sizemode="absolute", sizeref=0.45,
                                       colorscale=[[0, color], [1, color]], showscale=False,
                                       hoverinfo="skip", showlegend=False))
-        if robot["destination"]:
+        if show_routes and robot["destination"]:
             dx, dy = robot["destination"]
             fig.add_trace(go.Scatter3d(x=[dx], y=[dy], z=[0.18], mode="markers",
                                        marker={"symbol": "x", "size": 9, "color": color, "line": {"width": 3}},

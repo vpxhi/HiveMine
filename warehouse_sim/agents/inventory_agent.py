@@ -45,7 +45,10 @@ class InventoryAgent(mesa.Agent):
         skus = [f"SKU-{i:03d}" for i in range(1, 21)]
         for i, loc in enumerate(shelf_locations):
             # Each shelf holds 2 SKUs with random quantity
-            assigned_skus = [skus[i % len(skus)], skus[(i + 7) % len(skus)]]
+            second_index = i + 7
+            if second_index < len(shelf_locations):
+                second_index += len(shelf_locations)
+            assigned_skus = [skus[i % len(skus)], skus[second_index % len(skus)]]
             self.shelf_state[loc] = {
                 "skus": {sku: model.random.randint(5, 15) for sku in assigned_skus},
                 "reserved": False,
@@ -89,7 +92,9 @@ class InventoryAgent(mesa.Agent):
         Returns:
             True if reservation succeeded, False if already reserved.
         """
-        if shelf_id not in self.shelf_state:
+        if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
+            return False
+        if robot_id not in self.model.robots or shelf_id not in self.shelf_state:
             return False
         if self.shelf_state[shelf_id]["reserved"]:
             return False
@@ -131,6 +136,8 @@ class InventoryAgent(mesa.Agent):
         Returns:
             True if stock was sufficient, False otherwise.
         """
+        if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
+            return False
         if shelf_id not in self.shelf_state:
             return False
         if sku not in self.shelf_state[shelf_id]["skus"]:

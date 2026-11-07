@@ -33,7 +33,7 @@ class TestFullShockCycle:
         This test proves the system recovers gracefully from every shock
         type without crashing or entering an inconsistent state.
         """
-        model = WarehouseModel()
+        model = WarehouseModel(seed=42)
         shock_results = []
 
         for tick in range(1, 101):
@@ -94,7 +94,7 @@ class TestFullShockCycle:
 
     def test_200_ticks_no_crash(self):
         """Run 200 ticks with no shocks — baseline stability test."""
-        model = WarehouseModel()
+        model = WarehouseModel(seed=42)
 
         for tick in range(200):
             model.step()

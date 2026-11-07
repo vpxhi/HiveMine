@@ -13,6 +13,7 @@ callable from both the CLI (main.py) and the Streamlit dashboard.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,6 +35,8 @@ from .network import MessageType, NetworkSimulator
 GRID_WIDTH = 20
 GRID_HEIGHT = 20
 NUM_ROBOTS = 5
+TASK_ACTIVE_STATES = {"EN_ROUTE_TO_SHELF", "PICKING", "EN_ROUTE_TO_PACKING", "DROPPING", "RETURNING"}
+logger = logging.getLogger(__name__)
 
 # Shelf locations — distributed across the grid in two "aisles"
 SHELF_LOCATIONS: List[Tuple[int, int]] = [
@@ -63,7 +66,8 @@ class WarehouseModel(mesa.Model):
     Uses staged execution: sense → decide → act per tick.
     """
 
-    def __init__(self, seed: Optional[int] = None) -> None:
+    def __init__(self, seed: Optional[int] = None, log_file_path: Optional[str] = None,
+                 persist_log: bool = True) -> None:
         """Initialize the warehouse model with all agents and grid layout."""
         super().__init__()
         self.seed = seed
@@ -74,6 +78,8 @@ class WarehouseModel(mesa.Model):
         self.grid = mesa.space.MultiGrid(GRID_WIDTH, GRID_HEIGHT, torus=False)
 
         self.current_tick: int = 0
+        self._message_log_sequence = 0
+        self._message_log_limit = 10_000
         self.blocked_cells: set = set()
         self.shelf_locations = list(SHELF_LOCATIONS)
         self.packing_station = PACKING_STATION
@@ -91,14 +97,20 @@ class WarehouseModel(mesa.Model):
         }
         self._completed_at_last_step = 0
         self.completed_task_ids: set[int] = set()
+        self._reconciliation_active = False
+        self._reconciliation_force_start = False
+        self._reconciliation_sync_baseline = 0
+        self._reconciliation_expected_messages = NUM_ROBOTS * (NUM_ROBOTS - 1)
+        self._reconciliation_started_tick = 0
+        self.reconciliation_durations: List[int] = []
+        self.auction_metrics = {"auctions": 0, "bids_submitted": 0,
+                                "successful_allocations": 0, "invalid_auction_messages_rejected": 0}
+        self._counted_bids: set[Tuple[int, int]] = set()
         self._was_partitioned = False
-        self._log_file_path = os.path.join(
+        self._log_file_path = log_file_path or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "simulation_log.jsonl"
         )
-
-        # Clear log file on init
-        with open(self._log_file_path, "w") as f:
-            pass
+        self._persist_log = persist_log
 
         # ── Instantiate singleton agents ──────────────────────────────
         self.order_agent = OrderAgent(self)
@@ -129,9 +141,7 @@ class WarehouseModel(mesa.Model):
                     [r.battery for r in m.robots.values()]
                 ) if m.robots else 0,
                 "Robots_Charging": lambda m: m.charging_agent.get_charging_count(),
-                "Robots_Active": lambda m: sum(
-                    1 for r in m.robots.values() if r.status not in ("IDLE", "FAILED", "CHARGING")
-                ),
+                "Robots_Active": lambda m: sum(1 for r in m.robots.values() if r.status in TASK_ACTIVE_STATES),
                 "Collision_Count": lambda m: m.traffic_controller.collision_count,
                 "Deadlocks_Resolved": lambda m: m.traffic_controller.deadlocks_resolved,
                 "Shocks_Recovered": lambda m: m.shocks_recovered,
@@ -150,15 +160,25 @@ class WarehouseModel(mesa.Model):
         self.current_tick += 1
         self.network.advance(self.current_tick)
         is_partitioned = self.network.partition_count > 1
-        if self._was_partitioned and not is_partitioned:
+        if (self._was_partitioned and not is_partitioned) or self._reconciliation_force_start:
             self.network_phase = "reconnected"
+            self._reconciliation_active = True
+            self._reconciliation_sync_baseline = self.network.state_sync_received
+            live_robots = sum(robot.status != "FAILED" for robot in self.robots.values())
+            self._reconciliation_expected_messages = live_robots * max(0, live_robots - 1)
+            self._reconciliation_started_tick = self.current_tick
+            self._reconciliation_force_start = False
+            for event in self.recovery_events:
+                if event.get("status") != "recovered" and event.get("shock_type") in (
+                    "network_partition", "robot_isolation", "network_recovery"):
+                    event["expected_sync_messages"] = self._reconciliation_expected_messages
             self.log_message("Network", "AllRobots", {"action": "reconnection_reconciliation_started"})
             for robot in self.robots.values():
-                robot.publish_state_sync()
+                if robot.status != "FAILED":
+                    robot.publish_state_sync()
         self._was_partitioned = is_partitioned
         if is_partitioned:
             self.network_phase = "partitioned"
-        self._verify_recovery_events()
 
         # ── Stage 1: SENSE ────────────────────────────────────────────
         self.customer_agent.sense()
@@ -188,7 +208,16 @@ class WarehouseModel(mesa.Model):
         for robot in self.robots.values():
             if robot.status != "FAILED":
                 robot.act()
+        self._check_for_physical_collisions()
         self.traffic_controller.act()
+        if (self._reconciliation_active and self.network.state_sync_received - self._reconciliation_sync_baseline
+                >= self._reconciliation_expected_messages):
+            self._reconciliation_active = False
+            self.reconciliation_durations.append(self.current_tick - self._reconciliation_started_tick)
+            self.log_message("RobotNetwork", "AllRobots", {
+                "action": "state_sync_completed", "messages_received": self.network.state_sync_received,
+                "duration_ticks": self.reconciliation_durations[-1]})
+        self._verify_recovery_events()
 
         # ── Collect data ──────────────────────────────────────────────
         self.datacollector.collect(self)
@@ -200,6 +229,7 @@ class WarehouseModel(mesa.Model):
 
     def announce_task(self, task: Any) -> None:
         """Publish new work to the robot peer network; no fleet assignment is made here."""
+        self.auction_metrics["auctions"] += 1
         self.network.broadcast("OrderAgent", MessageType.TASK_ANNOUNCEMENT, {
             "task_id": task.task_id, "sku": task.sku, "qty": task.qty,
             "priority": task.priority, "priority_rank": task.priority_rank,
@@ -209,6 +239,9 @@ class WarehouseModel(mesa.Model):
 
     def track_recovery(self, event: Dict[str, Any]) -> None:
         """Track an injected disruption until its observable recovery condition holds."""
+        if event.get("shock_type") in ("network_partition", "robot_isolation", "network_recovery"):
+            event.setdefault("sync_baseline", self.network.state_sync_received)
+            event.setdefault("expected_sync_messages", NUM_ROBOTS * (NUM_ROBOTS - 1))
         if event.get("status") == "recovered":
             self.shocks_recovered += 1
         elif event.get("status") in ("recovery_in_progress", "injected"):
@@ -238,13 +271,16 @@ class WarehouseModel(mesa.Model):
                 recovered = bool(ids) and ids.issubset(self.completed_task_ids)
             elif kind == "deadlock_injection":
                 recovered = bool(event.get("deadlock_resolved")) or self.traffic_controller.deadlocks_resolved > event.get("deadlocks_before", 0)
-            elif kind in ("network_partition", "robot_isolation"):
-                recovered = self.network.partition_count == 1
+            elif kind in ("network_partition", "robot_isolation", "network_recovery"):
+                synced = self.network.state_sync_received >= event.get(
+                    "sync_baseline", 0) + event.get("expected_sync_messages", NUM_ROBOTS * (NUM_ROBOTS - 1))
+                recovered = self.network.partition_count == 1 and synced
             if recovered:
                 event["status"] = "recovered"
                 event["recovered"] = True
                 event["recovered_tick"] = self.current_tick
-                self.shocks_recovered += 1
+                if kind != "network_recovery":
+                    self.shocks_recovered += 1
                 self.log_message("RecoveryMonitor", "EventSystem", {
                     "action": "recovery_verified", "shock_type": kind,
                     "tick": self.current_tick,
@@ -257,6 +293,16 @@ class WarehouseModel(mesa.Model):
             return False
         task = next((t for t in self.order_agent.all_tasks if t.task_id == task_id), None)
         if task is None:
+            return False
+        if robot_id not in self.robots:
+            self.log_message("WarehouseWorld", "RobotNetwork", {
+                "action": "completion_rejected_invalid_robot", "task_id": task_id,
+                "robot_id": robot_id})
+            return False
+        shelf = self.inventory_agent.shelf_state.get(task.shelf_location)
+        if shelf is None or shelf.get("reserved_by") != robot_id:
+            self.log_message(f"Robot-{robot_id}", "WarehouseWorld", {
+                "action": "completion_rejected_without_inventory_reservation", "task_id": task_id})
             return False
         if not self.inventory_agent.decrement_stock(task.shelf_location, task.sku, task.qty):
             self.log_message(f"Robot-{robot_id}", "InventoryAgent", {"action": "completion_rejected_insufficient_stock", "task_id": task_id})
@@ -277,11 +323,26 @@ class WarehouseModel(mesa.Model):
         self.log_message(f"Robot-{robot_id}", "RobotNetwork", {"action": "task_complete", "task_id": task_id})
         return True
 
+    def _check_for_physical_collisions(self) -> None:
+        """Count actual co-occupancy outside explicitly shared work cells."""
+        shared_cells = {self.packing_station}
+        occupancy: Dict[Tuple[int, int], List[int]] = {}
+        for rid, robot in self.robots.items():
+            occupancy.setdefault(robot.pos_tuple, []).append(rid)
+        for cell, occupants in occupancy.items():
+            if cell not in shared_cells and len(occupants) > 1:
+                self.traffic_controller.collision_count += 1
+                self.log_message("WarehouseWorld", "TrafficController", {
+                    "action": "physical_collision_detected", "cell": cell,
+                    "robots": occupants})
+
     def get_network_state(self) -> Dict[str, Any]:
         return {
             "nodes": [{"id": f"Robot-{rid}", "robot_id": rid,
                        "status": robot.status, "battery": robot.battery,
                        "neighbors": self.network.neighbors(rid),
+                       "messages_sent": self.network.robot_message_counts[rid]["sent"],
+                       "messages_received": self.network.robot_message_counts[rid]["received"],
                        "connected_group": sorted(self.network.connected_robot_ids(rid))}
                       for rid, robot in self.robots.items()],
             "edges": [[a, b] for a, peers in self.network.adjacency.items()
@@ -295,7 +356,17 @@ class WarehouseModel(mesa.Model):
                         "partition_progress_by_group": dict(self.partition_progress_by_group),
                         "independent_decisions": sum(r.independent_decisions for r in self.robots.values()),
                         "conflicts_detected": self.network.conflicts_detected,
+                        "conflicts_resolved": self.network.conflicts_resolved,
+                        "duplicate_claims_prevented": self.network.duplicate_claims_prevented,
+                        "auctions": self.auction_metrics["auctions"],
+                        "bids_submitted": self.auction_metrics["bids_submitted"],
+                        "successful_allocations": self.auction_metrics["successful_allocations"],
+                        "blocked_moves": self.traffic_controller.blocked_moves,
                         "reconciliations": self.network.reconciliation_count,
+                        "average_message_delay_ticks": (round(self.network.delivered_delay_ticks / self.network.counters["delivered"], 2)
+                                                        if self.network.counters["delivered"] else None),
+                        "average_reconciliation_duration_ticks": (round(sum(self.reconciliation_durations) / len(self.reconciliation_durations), 2)
+                                                                  if self.reconciliation_durations else None),
                         "phase_comparison": {name: dict(values) for name, values in self.phase_metrics.items()}},
             "messages": [message.as_dict() for message in self.network.activity_log[-30:]],
         }
@@ -312,19 +383,25 @@ class WarehouseModel(mesa.Model):
             payload: Message content dictionary.
         """
         entry = {
+            "event_id": self._message_log_sequence + 1,
             "tick": self.current_tick,
             "from_agent": from_agent,
             "to_agent": to_agent,
             "payload": _serialize_payload(payload),
         }
+        self._message_log_sequence += 1
         self.message_log.append(entry)
+        if len(self.message_log) > self._message_log_limit:
+            del self.message_log[:len(self.message_log) - self._message_log_limit]
 
         # Append to JSONL file
+        if not self._persist_log:
+            return
         try:
             with open(self._log_file_path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
-        except Exception:
-            pass  # Don't crash simulation on log failure
+        except OSError:
+            logger.warning("Could not append to simulation log %s", self._log_file_path, exc_info=True)
 
     def get_robot_by_id(self, robot_id: int) -> Optional[RobotAgent]:
         """Look up a robot by its ID."""
@@ -339,7 +416,9 @@ class WarehouseModel(mesa.Model):
         robot_positions = {
             rid: {"pos": r.pos_tuple, "status": r.status, "battery": r.battery,
                   "task_id": getattr(r.current_task, "task_id", None),
-                  "destination": (r.current_task.shelf_location if r.status == "EN_ROUTE_TO_SHELF" and r.current_task else self.packing_station if r.status == "EN_ROUTE_TO_PACKING" else None),
+                  "destination": (r.current_task.shelf_location if r.status == "EN_ROUTE_TO_SHELF" and r.current_task
+                                  else self.packing_station if r.status == "EN_ROUTE_TO_PACKING"
+                                  else r._charging_dock if r.status in ("EN_ROUTE_TO_CHARGE", "CHARGING") else None),
                   "path": r.current_path[r.path_index:] if r.current_path else [],
                   "communication": r.communication_status,
                   "neighbors": r.nearby_agents, "local_queue": list(r.local_task_queue),
@@ -365,13 +444,17 @@ class WarehouseModel(mesa.Model):
             "packing_station": self.packing_station,
             "charging_docks": self.charging_docks,
             "blocked_cells": list(self.blocked_cells),
+            "tasks": [{"task_id": task.task_id, "status": task.status,
+                       "shelf_location": task.shelf_location,
+                       "assigned_robot": task.assigned_robot,
+                       "completed": task.task_id in self.completed_task_ids}
+                      for task in self.order_agent.all_tasks],
         }
 
     def get_kpis(self) -> Dict[str, Any]:
         """Return key performance indicators for dashboard display."""
         active_robots = sum(
-            1 for r in self.robots.values()
-            if r.status not in ("IDLE", "FAILED", "CHARGING")
+            1 for r in self.robots.values() if r.status in TASK_ACTIVE_STATES
         )
         failed_robots = sum(
             1 for r in self.robots.values() if r.status == "FAILED"
@@ -395,10 +478,34 @@ class WarehouseModel(mesa.Model):
             "total_tasks_completed": sum(
                 r.tasks_completed for r in self.robots.values()
             ),
-            "robot_utilisation": round(sum(1 for r in self.robots.values() if r.status not in ("IDLE", "FAILED", "CHARGING")) / max(1, len(self.robots)) * 100, 1),
-            "average_task_time": round(float(np.mean([t.completion_tick - t.arrival_tick for t in self.order_agent.completed_tasks if hasattr(t, "completion_tick")])) if any(hasattr(t, "completion_tick") for t in self.order_agent.completed_tasks) else 0.0, 1),
+            "robot_utilisation": round(active_robots / max(1, len(self.robots)) * 100, 1),
+            "average_active_robot_utilisation_pct": self._average_active_robot_utilisation(),
+            "average_task_time": (round(float(np.mean([t.completion_tick - t.arrival_tick for t in self.order_agent.completed_tasks
+                                                        if t.completion_tick >= 0])), 1)
+                                  if any(t.completion_tick >= 0 for t in self.order_agent.completed_tasks) else None),
+            "total_tasks_created": self.order_agent.total_orders_received,
+            "tasks_remaining": sum(t.task_id not in self.completed_task_ids for t in self.order_agent.all_tasks),
+            "task_completion_rate": (round(len(self.completed_task_ids) / self.order_agent.total_orders_received, 3)
+                                     if self.order_agent.total_orders_received else None),
+            "auction_metrics": self._get_auction_metrics(),
             "network": self.get_network_state()["metrics"],
         }
+
+    def _average_active_robot_utilisation(self) -> Optional[float]:
+        """Time-weighted active-on-task share over collected ticks, or None without samples."""
+        values = self.datacollector.get_model_vars_dataframe().get("Robots_Active")
+        if values is None or values.empty:
+            return None
+        return round(float(values.mean()) / max(1, len(self.robots)) * 100, 1)
+
+    def _get_auction_metrics(self) -> Dict[str, Any]:
+        auctions = self.auction_metrics["auctions"]
+        return {**self.auction_metrics,
+                "average_bids_per_auction": (round(self.auction_metrics["bids_submitted"] / auctions, 2)
+                                             if auctions else None),
+                "conflicts_detected": self.network.conflicts_detected,
+                "conflicts_resolved": self.network.conflicts_resolved,
+                "duplicate_claims_prevented": self.network.duplicate_claims_prevented}
 
     def get_recent_messages(self, n: int = 50) -> List[Dict[str, Any]]:
         """Return the last N inter-agent messages."""

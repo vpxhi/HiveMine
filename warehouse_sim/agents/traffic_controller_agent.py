@@ -42,6 +42,7 @@ class TrafficControllerAgent(mesa.Agent):
         # Active paths: robot_id -> list of (x,y) positions per timestep
         self.active_paths: Dict[int, List[Tuple[int, int]]] = {}
         self.collision_count: int = 0
+        self.blocked_moves: int = 0
         self.deadlocks_resolved: int = 0
         self.reroutes_performed: int = 0
 
@@ -121,6 +122,19 @@ class TrafficControllerAgent(mesa.Agent):
                 if existing_robot != robot_id:
                     conflict_robots.add(existing_robot)
 
+            if t > 0:
+                previous = path[t - 1]
+                for other_id, stored_path in self.active_paths.items():
+                    other_robot = self.model.get_robot_by_id(other_id)
+                    other_path = (other_robot.current_path[other_robot.path_index:]
+                                  if other_robot and other_robot.current_path else stored_path)
+                    if other_id == robot_id or not other_path:
+                        continue
+                    other_now = other_path[t] if t < len(other_path) else other_path[-1]
+                    other_previous = other_path[t - 1] if t - 1 < len(other_path) else other_path[-1]
+                    if cell == other_previous and previous == other_now:
+                        conflict_robots.add(other_id)
+
         return conflict_robots
 
     def _resolve_with_cbs(
@@ -137,7 +151,8 @@ class TrafficControllerAgent(mesa.Agent):
 
         for crid in conflict_robots:
             if crid in self.active_paths and self.active_paths[crid]:
-                cr_start = self.active_paths[crid][0]
+                robot = self.model.get_robot_by_id(crid)
+                cr_start = robot.pos_tuple if robot else self.active_paths[crid][0]
                 cr_goal = self.active_paths[crid][-1]
                 agents_sg[crid] = (cr_start, cr_goal)
 
@@ -244,7 +259,7 @@ class TrafficControllerAgent(mesa.Agent):
 
         for robot_id, path in self.active_paths.items():
             robot = self.model.get_robot_by_id(robot_id)
-            if not robot or robot.status == "IDLE":
+            if not robot or robot.status in ("IDLE", "FAILED"):
                 continue
 
             # Check if robot is blocked by another robot
