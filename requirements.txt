@@ -1,0 +1,12 @@
+# Autonomous AI-Powered Warehouse Fulfillment System
+# Install: pip install -r requirements.txt
+
+mesa>=3.0
+streamlit>=1.30
+# Required by modern Streamlit; avoids launch failures with an older global install.
+starlette>=0.40.0,<1.0
+plotly>=5.18
+matplotlib>=3.8
+networkx>=3.2
+numpy>=1.26
+pytest>=7.4
