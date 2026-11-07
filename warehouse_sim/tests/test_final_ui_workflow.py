@@ -9,6 +9,12 @@ def test_mission_control_robot_guided_demo_and_chaos_controls():
     dashboard = Path(__file__).parents[1] / "dashboard.py"
     app = AppTest.from_file(str(dashboard), default_timeout=30).run()
     assert not app.exception, [str(error) for error in app.exception]
+    assert any(element.type == "plotly_chart" for element in app)
+    assert any('aria-label="Live mini map' in str(element.value) for element in app.markdown)
+    app.segmented_control(key="console_mode").set_value("Technical").run()
+    assert not app.exception, [str(error) for error in app.exception]
+    assert any("Packet loss setting" in str(element.value) for element in app.markdown)
+    app.segmented_control(key="console_mode").set_value("Operator").run()
 
     def click_label(label):
         next(button for button in app.button if button.label == label).click().run()
@@ -23,10 +29,11 @@ def test_mission_control_robot_guided_demo_and_chaos_controls():
     app.button(key="camera_toggle").click().run()
     assert app.session_state["top_down"]
 
-    app.button(key="fleet_inspect_4").click().run()
+    app.button(key="console_focus_4").click().run()
     assert not app.exception, [str(error) for error in app.exception]
     assert app.session_state["selected_robot"] == 4
-    assert app.session_state["main_navigation"] == "Robot Intelligence"
+    assert app.session_state["main_navigation"] == "Mission Control"
+    app.segmented_control(key="main_navigation").set_value("Robot Intelligence").run()
     app.segmented_control(key="explore_mode").set_value("3D Warehouse").run()
     assert not app.exception, [str(error) for error in app.exception]
     app.button(key="perspective_robot_2").click().run()

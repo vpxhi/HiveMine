@@ -188,6 +188,8 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
                                        showlegend=False))
 
     eye = {"x": 0.0, "y": 0.02, "z": 2.7} if top_down else {"x": 1.55, "y": -1.85, "z": 1.45}
+    focus = robot_positions.get(selected_robot, (9.5, 9.5))
+    camera_center = {"x": (focus[0] - 9.5) / 20, "y": (focus[1] - 9.5) / 20, "z": -0.16}
     fig.update_layout(
         height=610,
         margin={"l": 0, "r": 0, "t": 0, "b": 0},
@@ -198,8 +200,8 @@ def build_warehouse_scene(model: Any, selected_robot: int = 0, top_down: bool = 
             "yaxis": {"range": [-1.2, 20.2], "visible": False},
             "zaxis": {"range": [-0.4, 3.6], "visible": False},
             "aspectmode": "manual", "aspectratio": {"x": 1, "y": 1, "z": 0.26},
-            "camera": {"eye": eye, "center": {"x": 0, "y": 0, "z": -0.16}},
-            "uirevision": "hivemine-camera-top" if top_down else "hivemine-camera-angle",
+            "camera": {"eye": eye, "center": camera_center},
+            "uirevision": f"hivemine-camera-top-{selected_robot}" if top_down else f"hivemine-camera-angle-{selected_robot}",
         },
         transition={"duration": 420, "easing": "cubic-in-out"},
         showlegend=False,

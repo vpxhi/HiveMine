@@ -38,13 +38,25 @@ st.html("""
 :root { --hm-bg:#080D19; --hm-panel:#111C2D; --hm-raised:#19283C; --hm-cyan:#48C8EF; --hm-violet:#A78BFA; --hm-green:#34D399; --hm-amber:#FBBF24; --hm-red:#FB7185; --hm-text:#F1F5F9; --hm-muted:#94A3B8; --hm-line:#26364B; }
 .stApp { background:var(--hm-bg); color:var(--hm-text); }
 [data-testid="stHeader"] { background:transparent; }
-.block-container { max-width:1720px; padding-top:1.05rem; padding-bottom:1.5rem; }
-h1,h2,h3 { font-family:'Segoe UI',Arial,sans-serif !important; letter-spacing:-.035em; }
-p,div,label,button { font-family:'Segoe UI',Arial,sans-serif; }
+.block-container { max-width:1900px; padding-top:.7rem; padding-bottom:1.2rem; }
+h1,h2,h3 { font-family:Inter,'Segoe UI',Arial,sans-serif !important; letter-spacing:-.035em; }
+p,div,label,button { font-family:Inter,'Segoe UI',Arial,sans-serif; }
+.stApp:before { content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.22;background-image:radial-gradient(ellipse at 50% 42%,rgba(20,91,121,.20),transparent 58%),linear-gradient(rgba(72,200,239,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(72,200,239,.045) 1px,transparent 1px);background-size:auto,42px 42px,42px 42px;mask-image:linear-gradient(to bottom,black,transparent 82%);animation:hm-grid-drift 48s linear infinite; }
+@keyframes hm-grid-drift { to { background-position:0 0,0 42px,42px 0; } }
+[data-testid="stMain"] > div { position:relative;z-index:1; }
 .hm-topbar { display:flex; align-items:center; gap:.8rem; }
-.hm-mark { width:2.65rem;height:2.65rem;display:grid;place-items:center;border-radius:12px;background:#10283A;border:1px solid #245069;color:var(--hm-cyan);font-weight:800;font-size:1.35rem; }
-.hm-brand { color:var(--hm-text);font-size:1.7rem;font-weight:800;letter-spacing:-.055em;line-height:1.1; }
-.hm-tagline { color:var(--hm-muted);font-size:.88rem;margin-top:.15rem; }
+.hm-mark { width:2.65rem;height:2.65rem;display:grid;place-items:center;border-radius:10px;background:#10283A;border:1px solid #245069;color:var(--hm-cyan);font-weight:800;font-size:1.35rem;box-shadow:0 0 24px rgba(72,200,239,.10); }
+.hm-brand { color:var(--hm-text);font-size:1.58rem;font-weight:800;letter-spacing:-.055em;line-height:1.1; }
+.hm-tagline { color:var(--hm-muted);font-size:.78rem;margin-top:.12rem; }
+.hm-console-label { color:var(--hm-cyan);font:600 .65rem ui-monospace,Consolas,monospace;letter-spacing:.14em;text-transform:uppercase; }
+.hm-panel-title { color:#DCE7F3;font-size:.76rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;margin:.2rem 0 .55rem; }
+.hm-mini-stat { border-top:1px solid rgba(148,163,184,.12);padding:.5rem 0 .35rem;display:flex;justify-content:space-between;gap:.35rem;color:var(--hm-muted);font-size:.73rem; }
+.hm-mini-stat b { color:var(--hm-text);font:600 .77rem ui-monospace,Consolas,monospace; }
+.hm-robot-card { border:1px solid rgba(148,163,184,.14);border-radius:9px;background:rgba(17,28,45,.65);padding:.48rem .55rem;margin:.35rem 0; }
+.hm-robot-meta { display:flex;justify-content:space-between;align-items:center;font:600 .72rem ui-monospace,Consolas,monospace;color:var(--hm-text); }
+.hm-robot-sub { color:var(--hm-muted);font-size:.68rem;margin-top:.2rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.hm-network-line { display:flex;align-items:center;gap:.4rem;color:#D5E1EF;font-size:.74rem;margin:.32rem 0; }
+.hm-network-line .hm-dot { width:.42rem;height:.42rem; }
 .hm-eyebrow { color:var(--hm-cyan);font-size:.69rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase; }
 .hm-hero { border:1px solid var(--hm-line);border-radius:18px;padding:1.2rem 1.4rem;background:var(--hm-panel);margin:.35rem 0 1rem; }
 .hm-hero-title { color:var(--hm-text);font:700 clamp(1.25rem,2.3vw,2rem) 'Segoe UI',Arial,sans-serif;letter-spacing:-.045em;margin:.22rem 0; }
@@ -62,15 +74,15 @@ p,div,label,button { font-family:'Segoe UI',Arial,sans-serif; }
 .hm-status-dot.warning { background:var(--hm-amber); }.hm-status-dot.danger { background:var(--hm-red); }
 @keyframes hm-pulse { 70% { box-shadow:0 0 0 .42rem rgba(72,200,239,0); } 100% { box-shadow:0 0 0 0 rgba(72,200,239,0); } }
 div[data-testid="stMetric"] { border-radius:13px;border-color:var(--hm-line);background:var(--hm-panel);padding:.7rem .85rem; }
-div[data-testid="stMetricValue"] { font-family:'Segoe UI',Arial,sans-serif;color:var(--hm-text); }
+div[data-testid="stMetricValue"] { font-family:ui-monospace,Consolas,monospace;color:var(--hm-text); }
 .stButton>button { min-height:2.45rem;border-radius:10px;transition:border-color .16s ease,background-color .16s ease; }
 .stButton>button:hover { border-color:var(--hm-cyan);background:#14263A; }
 .stButton>button:focus-visible { outline:2px solid var(--hm-cyan);outline-offset:2px; }
 div[role="radiogroup"] label,div[data-testid="stSegmentedControl"] label { border-radius:10px!important; }
 [data-testid="stExpander"] { border-radius:13px;border-color:var(--hm-line); }
-@media(max-width:900px) { .block-container{padding-left:1rem;padding-right:1rem}.hm-tagline{font-size:.8rem} }
-@media(max-width:620px) { .hm-topbar{align-items:flex-start}.hm-brand{font-size:1.45rem}.hm-hero{padding:1rem}.hm-tagline{max-width:38rem} }
-@media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important; } }
+@media(max-width:1050px) { .block-container{padding-left:1rem;padding-right:1rem}.hm-tagline{font-size:.74rem} }
+@media(max-width:760px) { .hm-console-label{display:none}.hm-brand{font-size:1.4rem}.hm-hero{padding:1rem} }
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important;transition:none!important;scroll-behavior:auto!important; } }
 </style>
 """)
 
@@ -333,6 +345,11 @@ def select_home_robot(robot_id: int) -> None:
     st.session_state.selected_robot = robot_id
     st.session_state.view = "Explore"
     st.session_state.main_navigation = "Robot Intelligence"
+
+
+def focus_console_robot(robot_id: int) -> None:
+    """Keep Mission Control open while focusing the live warehouse on a robot."""
+    st.session_state.selected_robot = robot_id
 
 
 def set_running(running: bool) -> None:
@@ -819,6 +836,104 @@ def render_metrics(presentation: bool = False) -> None:
         st.metric("Network", condition.title(), border=True)
 
 
+def render_mini_map() -> None:
+    """Draw a compact overview from the same live grid state as the 3D scene."""
+    state = model.get_grid_state()
+    width = int(state["grid_width"])
+    height = int(state["grid_height"])
+    cell = 9
+    pad = 5
+    svg_w, svg_h = width * cell + pad * 2, height * cell + pad * 2
+    parts = [f'<svg viewBox="0 0 {svg_w} {svg_h}" role="img" aria-label="Live mini map of warehouse robots, shelves and blocked aisles" style="width:100%;height:auto;display:block;background:#091321;border:1px solid #26364b;border-radius:9px">']
+    for x in range(width + 1):
+        xx = pad + x * cell
+        parts.append(f'<path d="M{xx} {pad}v{height*cell}" stroke="#203149" stroke-width=".55"/>')
+    for y in range(height + 1):
+        yy = pad + y * cell
+        parts.append(f'<path d="M{pad} {yy}h{width*cell}" stroke="#203149" stroke-width=".55"/>')
+    def point(pos: Any) -> tuple[float, float]:
+        return pad + (float(pos[0]) + .5) * cell, pad + (height - float(pos[1]) - .5) * cell
+    for pos in state["shelf_locations"]:
+        x, y = point(pos)
+        parts.append(f'<rect x="{x-2.7:.1f}" y="{y-2.7:.1f}" width="5.4" height="5.4" rx="1" fill="#75879a"/>')
+    for pos in state["blocked_cells"]:
+        x, y = point(pos)
+        parts.append(f'<rect x="{x-3.4:.1f}" y="{y-3.4:.1f}" width="6.8" height="6.8" rx="1" fill="#fb7185"/>')
+    for pos, color in ((state["packing_station"], "#34d399"), *[(p, "#fbbf24") for p in state["charging_docks"]]):
+        x, y = point(pos)
+        parts.append(f'<rect x="{x-3.1:.1f}" y="{y-3.1:.1f}" width="6.2" height="6.2" rx="2" fill="{color}"/>')
+    colors = ["#48c8ef", "#a78bfa", "#36b9a9", "#fbbf24", "#e879b8"]
+    for rid, robot in state["robots"].items():
+        x, y = point(robot["pos"])
+        color = "#fb7185" if robot["status"] == "FAILED" else colors[rid % len(colors)]
+        radius = 3.25 if rid == st.session_state.selected_robot else 2.5
+        stroke = "#ffffff" if rid == st.session_state.selected_robot else "#091321"
+        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius}" fill="{color}" stroke="{stroke}" stroke-width="1.3"><title>Robot {rid+1:02d}: {escape(robot["status"].replace("_", " ").title())}</title></circle>')
+    parts.append('</svg>')
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+
+def render_system_overview() -> None:
+    kpis = model.get_kpis()
+    condition, tone = network_condition()
+    operational_robots = sum(robot.status != "FAILED" for robot in model.robots.values())
+    with st.container(border=True):
+        st.markdown('<div class="hm-console-label">System overview</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-panel-title" style="margin-top:.4rem"><span class="hm-status-dot {tone}"></span>{escape(condition.title())}</div>', unsafe_allow_html=True)
+        render_mini_map()
+        st.markdown('<div class="hm-mini-stat"><span>Simulation time</span><b> T%04d</b></div>' % model.current_tick, unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Operational robots</span><b>{operational_robots} / {len(model.robots)}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Deliveries complete</span><b>{kpis["orders_completed"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Waiting for work</span><b>{kpis["pending_tasks"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Network groups</span><b>{model.network.partition_count}</b></div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown('<div class="hm-console-label">Fleet selection</div>', unsafe_allow_html=True)
+        for rid, robot in model.robots.items():
+            selected = rid == st.session_state.selected_robot
+            task = robot.current_task
+            task_label = f"Delivery {task.task_id}" if task else ROBOT_STATES.get(robot.status, robot.status.replace("_", " ").title())
+            peers = model.network.neighbors(rid)
+            connection = "Offline" if robot.status == "FAILED" else f"{len(peers)} links" if peers else "Isolated"
+            color = "#fb7185" if robot.status == "FAILED" else "#34d399" if peers else "#fbbf24"
+            st.markdown(f'<div class="hm-robot-card" style="border-color:{"#48c8ef" if selected else "rgba(148,163,184,.14)"}"><div class="hm-robot-meta"><span>R{rid+1:02d} <span style="color:{color}">●</span></span><span>{robot.battery:.0f}%</span></div><div class="hm-robot-sub">{escape(task_label)} · {escape(connection)}</div></div>', unsafe_allow_html=True)
+            st.button("Focus selected" if selected else f"Focus R{rid+1:02d}", key=f"console_focus_{rid}", width="stretch", type="primary" if selected else "secondary", on_click=focus_console_robot, args=(rid,))
+
+
+def render_intelligence_panel(technical: bool = False) -> None:
+    network = model.get_network_state()["metrics"]
+    groups = sorted(model.network.robot_components(), key=lambda group: min(group))
+    selected = model.robots[st.session_state.selected_robot]
+    with st.container(border=True):
+        st.markdown('<div class="hm-console-label">Network intelligence</div>', unsafe_allow_html=True)
+        for index, group in enumerate(groups):
+            names = " · ".join(f"R{int(node.split('-')[1])+1:02d}" for node in sorted(group))
+            color = ["#48c8ef", "#a78bfa", "#fbbf24", "#e879b8"][index % 4] if len(groups) > 1 else "#34d399"
+            st.markdown(f'<div class="hm-network-line"><span class="hm-dot" style="background:{color}"></span><span>{escape(names)}</span></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Delivered messages</span><b>{network["delivered"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Dropped messages</span><b>{network["dropped"]}</b></div>', unsafe_allow_html=True)
+        delay = network.get("average_message_delay_ticks")
+        st.markdown(f'<div class="hm-mini-stat"><span>Mean delay</span><b>{("—" if delay is None else str(delay)+" ticks")}</b></div>', unsafe_allow_html=True)
+        if technical:
+            st.markdown(f'<div class="hm-mini-stat"><span>Packet loss setting</span><b>{model.network.packet_loss:.0%}</b></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="hm-mini-stat"><span>Added latency</span><b>{model.network.latency} ticks</b></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="hm-mini-stat"><span>Auctions / bids</span><b>{network["auctions"]} / {network["bids_submitted"]}</b></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="hm-mini-stat"><span>State reconciliations</span><b>{network["reconciliations"]}</b></div>', unsafe_allow_html=True)
+    task = selected.current_task
+    task_label = f"Delivery {task.task_id}" if task else "No active delivery"
+    position = selected.pos_tuple
+    with st.container(border=True):
+        st.markdown(f'<div class="hm-console-label">Selected robot · R{selected.unique_id+1:02d}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Activity</span><b>{escape(ROBOT_STATES.get(selected.status, selected.status.replace("_", " ").title()))}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Position</span><b>({position[0]}, {position[1]})</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Battery</span><b>{selected.battery:.0f}%</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="hm-mini-stat"><span>Task</span><b>{escape(task_label)}</b></div>', unsafe_allow_html=True)
+        if st.button("Open local robot view", key="console_open_robot", width="stretch"):
+            st.session_state.main_navigation = "Robot Intelligence"
+            st.session_state.view = "Explore"
+            st.rerun()
+    render_activity_panel(limit=5 if technical else 3, title="Mission log")
+
+
 def current_experiment_label() -> str:
     if st.session_state.get("judge_demo_active"):
         return f"Judge demo / {st.session_state.get('judge_demo_phase', 'running').replace('_', ' ')}"
@@ -966,19 +1081,34 @@ def render_comparison() -> None:
 
 @st.fragment(run_every=0.7 if st.session_state.running else None)
 def home_live(selected_robot: int, top_down: bool, speed: int, presentation: bool = False) -> None:
+    # Fragment reruns keep their original arguments, so read mutable selections live.
+    selected_robot = st.session_state.selected_robot
     if st.session_state.running:
         advance_model(speed)
     render_metrics(presentation=presentation)
-    scene, side = st.columns([2.35, 1], gap="medium")
+    if presentation:
+        scene, side = st.columns([3.4, 1], gap="medium")
+    else:
+        overview, scene, intelligence = st.columns([0.8, 4.2, 0.9], gap="small")
+        side = intelligence
+        with overview:
+            render_system_overview()
     with scene:
         with st.container(border=True):
-            st.markdown("**Mission Control / live fleet view**" if presentation else "**Live warehouse**")
+            scene_head, mode_slot = st.columns([3, 1], vertical_alignment="center")
+            with scene_head:
+                st.markdown('<div class="hm-console-label">Live digital twin · Mission control</div>', unsafe_allow_html=True)
+            with mode_slot:
+                if not presentation:
+                    st.segmented_control("Interface detail", ["Operator", "Technical"], key="console_mode", label_visibility="collapsed", width="stretch")
+            kpis = model.get_kpis()
+            condition, _ = network_condition()
+            st.caption(f"TICK {model.current_tick:04d}  ·  {kpis['active_robots']} ROBOTS ACTIVE  ·  {kpis['pending_tasks']} OPEN DELIVERIES  ·  NETWORK {condition.upper()}")
             if not presentation:
                 st.caption("Drag to rotate. Scroll to zoom. Right-drag to pan.")
             render_scene_layers(presentation=presentation)
             fig = warehouse_figure(selected_robot, top_down)
-            if presentation:
-                fig.update_layout(height=690)
+            fig.update_layout(height=730 if not presentation else 760)
             st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": True, "responsive": True}, alt="Interactive 3D warehouse with live robot positions, routes, shelves and communication links")
     with side:
         if presentation:
@@ -989,8 +1119,7 @@ def home_live(selected_robot: int, top_down: bool, speed: int, presentation: boo
                 st.button("Open Chaos Lab", key="presentation_open_chaos", width="stretch",
                           icon=":material/hub:", on_click=navigate_to_chaos_lab)
         else:
-            render_fleet_panel()
-            render_activity_panel()
+            render_intelligence_panel(technical=st.session_state.get("console_mode", "Operator") == "Technical")
 
 
 @st.fragment(run_every=0.7 if st.session_state.running else None)

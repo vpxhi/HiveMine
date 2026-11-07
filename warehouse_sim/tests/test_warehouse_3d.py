@@ -11,6 +11,12 @@ def test_3d_scene_tracks_real_robot_positions_routes_and_broken_links():
         model.step()
     robot = model.robots[0]
     fig = build_warehouse_scene(model, selected_robot=0)
+    expected_camera_center = {
+        "x": (robot.pos_tuple[0] - 9.5) / 20,
+        "y": (robot.pos_tuple[1] - 9.5) / 20,
+        "z": -0.16,
+    }
+    assert fig.layout.scene.camera.center.to_plotly_json() == expected_camera_center
     robot_body = next(trace for trace in fig.data if trace.name == "Robot 01")
     assert (sum(robot_body.x) / len(robot_body.x), sum(robot_body.y) / len(robot_body.y)) == pytest.approx(robot.pos_tuple)
     assert any(trace.name == "Shelf A" for trace in fig.data)
